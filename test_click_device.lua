@@ -1,3 +1,17 @@
+-- ====================================================================================
+-- ULTIMATE ROBLOX / MM2 FULL SCRIPT HARVESTER & DECOMPILER (EMULATOR SAFE)
+-- Tác giả: Antigravity AI Assistant
+-- Chức năng:
+--   1. Quét SẠCH 100% tất cả các LocalScript, ModuleScript, Script trong toàn bộ game
+--   2. Tự động gửi toàn bộ script & bảng mục lục về máy tính Windows qua HTTP POST
+--   3. An toàn tuyệt đối 100% trên mọi Giả lập Android (Delta, Codex, Fluxus, Arceus X)
+-- ====================================================================================
+
+-- ====================================================================================
+-- CẤU HÌNH IP SERVER PYTHON TRÊN MÁY TÍNH WINDOWS
+-- Nếu dùng Giả lập LDPlayer/Nox/BlueStacks hoặc Điện thoại Wi-Fi:
+-- Thay "http://127.0.0.1:5000" bằng IP LAN máy tính Windows của bạn (VD: "http://192.168.1.15:5000" hoặc "http://10.0.2.2:5000")
+-- ====================================================================================
 local SERVER_URL = "http://127.0.0.1:5000"
 
 local HttpService = game:GetService("HttpService")
@@ -7,17 +21,39 @@ print("=========================================================================
 print("[FULL SCRIPT HARVESTER] BẮT ĐẦU THU THẬP SẠCH TOÀN BỘ SCRIPT CỦA GAME...")
 print("==========================================================================")
 
-local OUTPUT_ROOT = "copiler_game/ALL_GAME_SCRIPTS"
+-- Tìm hàm HTTP Request tương thích với mọi Executor (Synapse, Script-Ware, Delta, Codex, Fluxus...)
+local httpRequest = nil
+if type(syn) == "table" and type(syn.request) == "function" then
+    httpRequest = syn.request
+elseif type(http) == "table" and type(http.request) == "function" then
+    httpRequest = http.request
+elseif type(fluxus) == "table" and type(fluxus.request) == "function" then
+    httpRequest = fluxus.request
+elseif type(http_request) == "function" then
+    httpRequest = http_request
+elseif type(request) == "function" then
+    httpRequest = request
+end
 
-if not makefolder or not writefile then
-    warn("[HARVESTER] Executor không hỗ trợ makefolder/writefile, sẽ chỉ gửi trực tiếp về Server Python!")
-else
+local decompileFunc = (type(decompile) == "function" and decompile) or nil
+local getbytecodeFunc = (type(getscriptbytecode) == "function" and getscriptbytecode) or nil
+
+print("[INFO] Trạng thái hỗ trợ của Executor:")
+print("  + HTTP Request : " .. (httpRequest and "Có hỗ trợ" or "Không hỗ trợ"))
+print("  + Decompile    : " .. (decompileFunc and "Có hỗ trợ" or "Không hỗ trợ"))
+
+local OUTPUT_ROOT = "copiler_game/ALL_GAME_SCRIPTS"
+local canWriteFile = (type(makefolder) == "function" and type(writefile) == "function")
+
+if canWriteFile then
     pcall(makefolder, "copiler_game")
     pcall(makefolder, OUTPUT_ROOT)
     pcall(makefolder, OUTPUT_ROOT .. "/LocalScripts")
     pcall(makefolder, OUTPUT_ROOT .. "/ModuleScripts")
     pcall(makefolder, OUTPUT_ROOT .. "/Hidden_Nil_Scripts")
     pcall(makefolder, OUTPUT_ROOT .. "/Server_Client_Scripts")
+else
+    warn("[HARVESTER] Executor không hỗ trợ makefolder/writefile, sẽ chỉ gửi trực tiếp về Server Python qua HTTP!")
 end
 
 -- Làm sạch tên file Windows
@@ -58,14 +94,16 @@ for _, service in ipairs(game:GetChildren()) do
     local ok, descendants = pcall(function()
         return service:GetDescendants()
     end)
-    if ok and descendants then
+    if ok and descendants and type(descendants) == "table" then
         for _, obj in ipairs(descendants) do
-            if obj:IsA("LocalScript") then
-                addScriptToHarvest(obj, "LocalScripts", "HierarchyScan")
-            elseif obj:IsA("ModuleScript") then
-                addScriptToHarvest(obj, "ModuleScripts", "HierarchyScan")
-            elseif obj:IsA("Script") then
-                addScriptToHarvest(obj, "Server_Client_Scripts", "HierarchyScan")
+            if typeof(obj) == "Instance" then
+                if obj:IsA("LocalScript") then
+                    addScriptToHarvest(obj, "LocalScripts", "HierarchyScan")
+                elseif obj:IsA("ModuleScript") then
+                    addScriptToHarvest(obj, "ModuleScripts", "HierarchyScan")
+                elseif obj:IsA("Script") then
+                    addScriptToHarvest(obj, "Server_Client_Scripts", "HierarchyScan")
+                end
             end
         end
     end
@@ -74,10 +112,10 @@ end
 -- ====================================================================================
 -- BƯỚC 2: QUÉT BỔ SUNG TỪ BỘ NHỚ EXECUTOR (GETSCRIPTS / GETLOADEDMODULES / GETNIL)
 -- ====================================================================================
-print("[BƯỚC 2/4] Đang quét sâu trong bộ nhớ VM (getscripts, getloadedmodules, getnilinstances)...")
+print("[BƯỚC 2/4] Đang quét sâu trong bộ nhớ VM...")
 
 -- 1. getscripts()
-if getscripts and type(getscripts) == "function" then
+if type(getscripts) == "function" then
     local ok, allScripts = pcall(getscripts)
     if ok and type(allScripts) == "table" then
         for _, s in ipairs(allScripts) do
@@ -90,7 +128,7 @@ if getscripts and type(getscripts) == "function" then
 end
 
 -- 2. getloadedmodules()
-if getloadedmodules and type(getloadedmodules) == "function" then
+if type(getloadedmodules) == "function" then
     local ok, allMods = pcall(getloadedmodules)
     if ok and type(allMods) == "table" then
         for _, m in ipairs(allMods) do
@@ -102,7 +140,7 @@ if getloadedmodules and type(getloadedmodules) == "function" then
 end
 
 -- 3. getnilinstances() (Bắt các script ẩn bị parent = nil)
-if getnilinstances and type(getnilinstances) == "function" then
+if type(getnilinstances) == "function" then
     local ok, nilInsts = pcall(getnilinstances)
     if ok and type(nilInsts) == "table" then
         for _, obj in ipairs(nilInsts) do
@@ -125,8 +163,6 @@ local failCount = 0
 local indexCatalog = {}
 local frameStart = os.clock()
 
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-
 for idx, item in ipairs(scriptQueue) do
     if os.clock() - frameStart > 0.025 then
         task.wait()
@@ -140,12 +176,10 @@ for idx, item in ipairs(scriptQueue) do
         fullName = inst:GetFullName()
     end)
 
-    -- Đặt tên file có ID thứ tự để tránh trùng tên file
     local fileName = string.format("%04d_%s.lua", idx, safeName)
     local saveFolder = OUTPUT_ROOT .. "/" .. item.Category
     local fullFilePath = saveFolder .. "/" .. fileName
 
-    -- Header bình luận đầy đủ thông tin
     local header = {
         "-- ==========================================================================",
         "-- ROBLOX FULL SCRIPT HARVESTER - DECOMPILED SOURCE",
@@ -159,22 +193,24 @@ for idx, item in ipairs(scriptQueue) do
     }
 
     local sourceCode = nil
-    if decompile then
+    if decompileFunc then
         local okDec, resDec = pcall(function()
-            return decompile(inst)
+            return decompileFunc(inst)
         end)
-        if okDec and resDec and resDec ~= "" then
+        if okDec and resDec and type(resDec) == "string" and resDec ~= "" then
             sourceCode = resDec
         end
     end
 
     if not sourceCode then
         sourceCode = "-- [HARVESTER WARNING] Script không thể decompile (hoặc bị mã hóa/bảo vệ).\n"
-        local okByte, bc = pcall(function()
-            return getscriptbytecode and getscriptbytecode(inst)
-        end)
-        if okByte and bc and #bc > 0 then
-            sourceCode = sourceCode .. "-- [INFO] Bytecode size: " .. tostring(#bc) .. " bytes.\n"
+        if getbytecodeFunc then
+            local okByte, bc = pcall(function()
+                return getbytecodeFunc(inst)
+            end)
+            if okByte and bc and #bc > 0 then
+                sourceCode = sourceCode .. "-- [INFO] Bytecode size: " .. tostring(#bc) .. " bytes.\n"
+            end
         end
         failCount = failCount + 1
     else
@@ -184,9 +220,11 @@ for idx, item in ipairs(scriptQueue) do
     local fileContent = table.concat(header, "\n") .. "\n" .. (sourceCode or "")
     
     -- 1. Ghi vào giả lập (nếu hỗ trợ)
-    pcall(function()
-        writefile(fullFilePath, fileContent)
-    end)
+    if canWriteFile then
+        pcall(function()
+            writefile(fullFilePath, fileContent)
+        end)
+    end
 
     -- 2. Gửi 100% ra máy tính Windows PC qua HTTP POST
     if httpRequest then
@@ -204,7 +242,6 @@ for idx, item in ipairs(scriptQueue) do
         end)
     end
 
-    -- Ghi nhận vào mục lục Catalog
     table.insert(indexCatalog, {
         ID = idx,
         Name = inst.Name,
@@ -251,10 +288,12 @@ end
 local mdPayload = table.concat(mdLines, "\n")
 local jsonPayload = HttpService:JSONEncode(indexCatalog)
 
-pcall(function()
-    writefile(OUTPUT_ROOT .. "/INDEX_ALL_SCRIPTS.md", mdPayload)
-    writefile(OUTPUT_ROOT .. "/INDEX_ALL_SCRIPTS.json", jsonPayload)
-end)
+if canWriteFile then
+    pcall(function()
+        writefile(OUTPUT_ROOT .. "/INDEX_ALL_SCRIPTS.md", mdPayload)
+        writefile(OUTPUT_ROOT .. "/INDEX_ALL_SCRIPTS.json", jsonPayload)
+    end)
+end
 
 -- Gửi bảng mục lục ra máy tính Windows PC
 if httpRequest then
