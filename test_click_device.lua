@@ -1,16 +1,4 @@
 -- ====================================================================================
--- ULTIMATE ROBLOX / MM2 FULL SCRIPT HARVESTER & DECOMPILER (EMULATOR SAFE)
--- Tác giả: Antigravity AI Assistant
--- Chức năng:
---   1. Quét SẠCH 100% tất cả các LocalScript, ModuleScript, Script trong toàn bộ game
---   2. Tự động gửi toàn bộ script & bảng mục lục về máy tính Windows qua HTTP POST
---   3. An toàn tuyệt đối 100% trên mọi Giả lập Android (Delta, Codex, Fluxus, Arceus X)
--- ====================================================================================
-
--- ====================================================================================
--- CẤU HÌNH IP SERVER PYTHON TRÊN MÁY TÍNH WINDOWS
--- Nếu dùng Giả lập LDPlayer/Nox/BlueStacks hoặc Điện thoại Wi-Fi:
--- Thay "http://127.0.0.1:5000" bằng IP LAN máy tính Windows của bạn (VD: "http://192.168.1.15:5000" hoặc "http://10.0.2.2:5000")
 -- ====================================================================================
 local SERVER_URL = "http://127.0.0.1:5000"
 
