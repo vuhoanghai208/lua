@@ -1,0 +1,10 @@
+getgenv().WoodcuttingConfig = {
+    ["Webhook URL"]     = "https://discord.com/api/webhooks/1397922298501005433/GEYiKwB5LYJ2zP5k9EZDMrNeE2Hl6tJKSjZsi4q1-prT7PW-49ylG61Orx_dR73DgDaf",
+    ["Discord Tag ID"]  = "992368296374571018",     -- ID Discord để ping (ví dụ: "1234567890", để trống nếu không dùng)
+    ["Woodcutting"]     = true,   -- true = chạy farm, false = dừng
+    ["Auto Open Gifts"] = false,  -- false = giữ Wooden Gift, true = mở
+    ["Optimize"]        = true,
+    ["FPS"]             = 10,
+    ["Debug"]           = true,
+}
+loadstring(game:HttpGet("https://raw.githubusercontent.com/vuhoanghai208/lua/refs/heads/main/wood"))()
