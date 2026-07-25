@@ -661,11 +661,60 @@ end
 
 -- Serverhop Utilities
 local JoinedJobs = {}
+local isTeleporting = false
+local lastHopTime = 0
+
+local queue_on_teleport = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+
+local function QueueReexecution()
+    if queue_on_teleport then
+        pcall(queue_on_teleport, [[
+            repeat task.wait() until game:IsLoaded()
+            print("[SNIPER] Re-executing sniper after server hop...")
+        ]])
+    end
+end
+
 local function HopServer()
-    local cfg = getgenv().SniperConfig
+    if isTeleporting then return end
+    if os.time() - lastHopTime < 8 then return end
+
+    isTeleporting = true
+    lastHopTime = os.time()
     print("[SNIPER] 🚀 Preparing Serverhop...")
 
-    -- 1. Try Targeted Hop via Trading Terminal for FixedPrice items
+    QueueReexecution()
+
+    -- 1. If currently not in Trading Plaza, use PS99 native Travel to Trading Plaza API
+    local isPlaza = false
+    pcall(function()
+        if TradingPlazaCmds and TradingPlazaCmds.IsOnTradingPlaza then
+            isPlaza = TradingPlazaCmds.IsOnTradingPlaza()
+        end
+    end)
+    if not isPlaza and (game.PlaceId ~= PLAZA_PLACES.Normal and game.PlaceId ~= PLAZA_PLACES.Pro) then
+        local targetPlaceId = GetTargetPlazaId()
+        print(string.format("[SNIPER] 🏰 Traveling to Trading Plaza (%d)...", targetPlaceId))
+        local travelOk = pcall(function()
+            if TradingPlazaCmds and TradingPlazaCmds.RequestTradingPlaza then
+                TradingPlazaCmds.RequestTradingPlaza(targetPlaceId)
+            else
+                Network.Invoke("Travel to Trading Plaza", targetPlaceId)
+            end
+        end)
+        if not travelOk then
+            pcall(function()
+                TeleportService:Teleport(targetPlaceId, LocalPlayer)
+            end)
+        end
+        task.wait(10)
+        isTeleporting = false
+        return
+    end
+
+    local cfg = getgenv().SniperConfig
+
+    -- 2. Try Targeted Hop via Trading Terminal for FixedPrice items
     if cfg.FixedPrices then
         for itemID, maxPrice in pairs(cfg.FixedPrices) do
             local placeId, jobId = SearchItemOnTerminal("Misc", { id = itemID })
@@ -675,16 +724,21 @@ local function HopServer()
             if placeId and jobId and jobId ~= game.JobId and not table.find(JoinedJobs, jobId) then
                 table.insert(JoinedJobs, jobId)
                 print(string.format("[SNIPER] 🎯 Terminal found server for %s! Teleporting to %s...", itemID, jobId))
-                pcall(function()
+                local tpOk, tpErr = pcall(function()
                     TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
                 end)
-                task.wait(5)
+                if not tpOk then
+                    warn("[SNIPER ⚠️] TeleportToPlaceInstance failed: " .. tostring(tpErr))
+                    warn("[SNIPER ⚠️] If executor blocked teleport, please disable 'Verify Teleports' in your Executor Settings!")
+                end
+                task.wait(6)
+                isTeleporting = false
                 return
             end
         end
     end
 
-    -- 2. Fallback Public Server Hop
+    -- 3. Fallback Public Server Hop
     local targetPlaceId = GetTargetPlazaId()
     local url = string.format("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Desc&limit=100", tostring(targetPlaceId))
     
@@ -693,28 +747,47 @@ local function HopServer()
     end)
 
     if ok and body then
-        local data = pcall(HttpService.JSONDecode, HttpService, body) and HttpService:JSONDecode(body)
-        if data and data.data then
+        local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, body)
+        if decodeOk and data and data.data then
             for _, s in ipairs(data.data) do
                 if s.id ~= game.JobId and s.playing < s.maxPlayers and s.playing >= 5 and not table.find(JoinedJobs, s.id) then
                     table.insert(JoinedJobs, s.id)
                     if #JoinedJobs > 15 then table.remove(JoinedJobs, 1) end
                     print(string.format("[SNIPER] 🌐 Teleporting to Public Server %s (%d/%d players)...", s.id, s.playing, s.maxPlayers))
-                    pcall(function()
+                    local tpOk, tpErr = pcall(function()
                         TeleportService:TeleportToPlaceInstance(targetPlaceId, s.id, LocalPlayer)
                     end)
-                    task.wait(5)
+                    if not tpOk then
+                        warn("[SNIPER ⚠️] TeleportToPlaceInstance failed: " .. tostring(tpErr))
+                        warn("[SNIPER ⚠️] If executor blocked teleport, please disable 'Verify Teleports' in your Executor Settings!")
+                    end
+                    task.wait(6)
+                    isTeleporting = false
                     return
                 end
             end
         end
     end
 
-    -- 3. Last Fallback Teleport
-    pcall(function()
+    -- 4. Last Fallback Teleport
+    print(string.format("[SNIPER] 🔄 Fallback Teleporting to Place %d...", targetPlaceId))
+    local tpOk, tpErr = pcall(function()
         TeleportService:Teleport(targetPlaceId, LocalPlayer)
     end)
+    if not tpOk then
+        warn("[SNIPER ⚠️] Teleport failed: " .. tostring(tpErr))
+    end
+    task.wait(6)
+    isTeleporting = false
 end
+
+-- TeleportInitFailed listener to reset state on failure
+TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
+    if player == LocalPlayer then
+        warn(string.format("[SNIPER ⚠️] TeleportInitFailed: %s (Reason: %s)", tostring(teleportResult), tostring(errorMessage)))
+        isTeleporting = false
+    end
+end)
 
 -- Main Loop
 task.spawn(function()
@@ -722,25 +795,33 @@ task.spawn(function()
     print(" 🚀 PS99 Auto Booth Sniper Started!")
     print("=============================================")
 
-    -- Auto Teleport to Plaza if executed outside of Trading Plaza
-    if game.PlaceId ~= PLAZA_PLACES.Normal and game.PlaceId ~= PLAZA_PLACES.Pro then
-        print("[SNIPER] Currently not in Trading Plaza. Teleporting to Plaza...")
-        HopServer()
-        return
-    end
-
     local startTime = os.time()
 
     while task.wait(1) do
+        -- Auto Teleport to Plaza if executed outside of Trading Plaza
+        local isPlaza = false
+        pcall(function()
+            if TradingPlazaCmds and TradingPlazaCmds.IsOnTradingPlaza then
+                isPlaza = TradingPlazaCmds.IsOnTradingPlaza()
+            end
+        end)
+
+        if not isPlaza and (game.PlaceId ~= PLAZA_PLACES.Normal and game.PlaceId ~= PLAZA_PLACES.Pro) then
+            print("[SNIPER] Currently not in Trading Plaza. Teleporting to Plaza...")
+            HopServer()
+            task.wait(5)
+            continue
+        end
+
         local cfg = getgenv().SniperConfig
-        if not cfg.Enabled then continue end
+        if not cfg or not cfg.Enabled then continue end
 
         -- Scan current server
         local count = ScanServerBooths()
 
         -- AutoHop timer check
         if cfg.AutoHop and (os.time() - startTime) >= (cfg.HopDelay or 5) then
-            if count == 0 then
+            if count == 0 and not isTeleporting then
                 HopServer()
                 startTime = os.time()
             end
