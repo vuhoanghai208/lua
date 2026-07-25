@@ -1,5 +1,5 @@
 --[[
-    Pet Simulator 99 - Auto Booth Sniper (Optimized & Crash-Proof Remake)
+    ssssssssssssssss Pet Simulator 99 - Auto Booth Sniper (Optimized & Crash-Proof Remake)
     Author: Antigravity AI & Hoang Hai Workspace
     Features:
     - Zero-Lag Booth Memory State Hooking (getsenv / getupvalues)
@@ -675,6 +675,30 @@ local function QueueReexecution()
     end
 end
 
+-- Teleport Bypass Helper for Executor Hooks (Delta / Codex)
+local function TeleportInstanceBypass(targetPlaceId, targetJobId, teleportData)
+    local TS = cloneref and cloneref(game:GetService("TeleportService")) or TeleportService
+
+    -- 1. Try dot-syntax invocation to bypass __namecall hooks
+    local ok, err = pcall(function()
+        local tpFunc = TS.TeleportToPlaceInstance
+        tpFunc(TS, targetPlaceId, targetJobId, LocalPlayer, nil, teleportData)
+    end)
+    if ok then return true end
+
+    -- 2. Fallback to method invocation
+    ok, err = pcall(function()
+        TS:TeleportToPlaceInstance(targetPlaceId, targetJobId, LocalPlayer, nil, teleportData)
+    end)
+    if ok then return true end
+
+    -- 3. Fallback to basic Teleport
+    ok, err = pcall(function()
+        TS:Teleport(targetPlaceId, LocalPlayer)
+    end)
+    return ok
+end
+
 local function HopServer()
     if isTeleporting then return end
     if os.time() - lastHopTime < 8 then return end
@@ -724,12 +748,15 @@ local function HopServer()
             if placeId and jobId and jobId ~= game.JobId and not table.find(JoinedJobs, jobId) then
                 table.insert(JoinedJobs, jobId)
                 print(string.format("[SNIPER] 🎯 Terminal found server for %s! Teleporting to %s...", itemID, jobId))
-                local tpOk, tpErr = pcall(function()
-                    TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
-                end)
-                if not tpOk then
-                    warn("[SNIPER ⚠️] TeleportToPlaceInstance failed: " .. tostring(tpErr))
-                    warn("[SNIPER ⚠️] If executor blocked teleport, please disable 'Verify Teleports' in your Executor Settings!")
+                
+                local teleportPayload = {
+                    IsTerminalTeleport = true,
+                    TerminalStackKey = itemID
+                }
+                
+                local tpSuccess = TeleportInstanceBypass(placeId, jobId, teleportPayload)
+                if not tpSuccess then
+                    warn("[SNIPER ⚠️] Teleport failed! If Delta blocked it, turn off BOTH 'Anti Scam' AND 'Verify Teleports' in Delta Settings & press Save Settings!")
                 end
                 task.wait(6)
                 isTeleporting = false
@@ -754,12 +781,10 @@ local function HopServer()
                     table.insert(JoinedJobs, s.id)
                     if #JoinedJobs > 15 then table.remove(JoinedJobs, 1) end
                     print(string.format("[SNIPER] 🌐 Teleporting to Public Server %s (%d/%d players)...", s.id, s.playing, s.maxPlayers))
-                    local tpOk, tpErr = pcall(function()
-                        TeleportService:TeleportToPlaceInstance(targetPlaceId, s.id, LocalPlayer)
-                    end)
-                    if not tpOk then
-                        warn("[SNIPER ⚠️] TeleportToPlaceInstance failed: " .. tostring(tpErr))
-                        warn("[SNIPER ⚠️] If executor blocked teleport, please disable 'Verify Teleports' in your Executor Settings!")
+                    
+                    local tpSuccess = TeleportInstanceBypass(targetPlaceId, s.id, nil)
+                    if not tpSuccess then
+                        warn("[SNIPER ⚠️] Teleport failed! If Delta blocked it, turn off BOTH 'Anti Scam' AND 'Verify Teleports' in Delta Settings & press Save Settings!")
                     end
                     task.wait(6)
                     isTeleporting = false
@@ -771,12 +796,9 @@ local function HopServer()
 
     -- 4. Last Fallback Teleport
     print(string.format("[SNIPER] 🔄 Fallback Teleporting to Place %d...", targetPlaceId))
-    local tpOk, tpErr = pcall(function()
+    pcall(function()
         TeleportService:Teleport(targetPlaceId, LocalPlayer)
     end)
-    if not tpOk then
-        warn("[SNIPER ⚠️] Teleport failed: " .. tostring(tpErr))
-    end
     task.wait(6)
     isTeleporting = false
 end
