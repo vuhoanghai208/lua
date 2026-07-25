@@ -1,0 +1,792 @@
+--[[
+    Pet Simulator 99 - Auto Booth Sniper (Optimized & Crash-Proof Remake)
+    Author: Antigravity AI & Hoang Hai Workspace
+    Features:
+    - Zero-Lag Booth Memory State Hooking (getsenv / getupvalues)
+    - Authentic Booths_RequestPurchase Remote Invocation with Anti-Cheat Payload
+    - Targeted Serverhop via TradingTerminal_Search API
+    - RAP Profit & Percentage Below RAP Analysis
+    - Persistent Config (SniperConfig.json) & Universal Executor Support
+    - Rich Discord Webhook Notifications with BigGames Image API
+--]]
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+repeat task.wait() until LocalPlayer and LocalPlayer:GetAttribute("__LOADED")
+
+-- Constants & Place IDs
+local PLAZA_PLACES = {
+    Normal = 15502339080,
+    Pro = 15588442388
+}
+local MAX_LISTING_AMOUNT = 50000 -- From BoothCmds.lua:782
+
+-- HTTP Request Fallback
+local httpRequest = syn and syn.request or http and http.request or http_request or request
+
+-- Library Imports
+local NLibrary = ReplicatedStorage:WaitForChild("Library")
+local PlayerSave = require(NLibrary.Client.Save)
+local TradingPlazaCmds = require(NLibrary.Client.TradingPlazaCmds)
+local Directory = require(NLibrary.Directory)
+local Rarities = table.clone(require(NLibrary.Directory.Rarity))
+local ParseAssetId = require(NLibrary.Functions.ParseAssetId)
+local Network = require(NLibrary.Client.Network)
+local CurrencyCmds = require(NLibrary.Client.CurrencyCmds)
+
+-- Persistent Config Setup
+local CONFIG_FILE = "SniperConfig.json"
+local DefaultConfig = {
+    Enabled = true,
+    PlazaType = "Auto", -- "Normal", "Pro", or "Auto"
+    AutoHop = true,
+    HopDelay = 5, -- Hop after N seconds if no items found
+    MinDiamonds = 1000, -- Don't spend below this diamond balance
+    WebhookURL = "https://discord.com/api/webhooks/1397922298501005433/GEYiKwB5LYJ2zP5k9EZDMrNeE2Hl6tJKSjZsi4q1-prT7PW-49ylG61Orx_dR73DgDaf",
+    WebhookEnabled = true,
+    AntiAFK = true,
+    
+    -- Targets by Fixed Price (Max price you are willing to pay)
+    FixedPrices = {
+        ["Secret Key"] = 20000,
+    },
+    
+    -- Targets by Percentage Below RAP (Set number for % off, or set to false to disable)
+    PercentBelowRAPEnabled = false, -- Master switch for buying by % below RAP
+    PercentBelowRAP = {
+        ["Huge"] = 30, -- Buy Huges if 30% below RAP (Set false to disable)
+        ["Exclusive"] = 25,
+        ["Secret Key"] = 15,
+        ["Crystal Key"] = false,
+    },
+
+    -- Buy Limits Configuration (Set max quantity to buy, or set to false for unlimited)
+    LimitBuyEnabled = true, -- Master switch for buy limits
+    LimitBuy = {
+        ["Secret Key"] = 1000, -- Max 50 Secret Keys (Set false for unlimited)
+        ["Crystal Key"] = false,
+    },
+
+    -- Category Toggles
+    BuyAllHugesBelowRAP = true,
+    HugeMinPercentOff = 25,
+    BuyAllTitanicsBelowRAP = true,
+    TitanicMinPercentOff = 20
+}
+
+getgenv().SniperConfig = getgenv().SniperConfig or {}
+
+local function LoadConfig()
+    local success, content = pcall(function()
+        if isfile and isfile(CONFIG_FILE) then
+            return readfile(CONFIG_FILE)
+        end
+    end)
+    if success and content and #content > 0 then
+        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, content)
+        if ok and type(decoded) == "table" then
+            for k, v in pairs(decoded) do
+                getgenv().SniperConfig[k] = v
+            end
+            for k, v in pairs(DefaultConfig) do
+                if getgenv().SniperConfig[k] == nil then
+                    getgenv().SniperConfig[k] = v
+                end
+            end
+            return
+        end
+    end
+    -- Fallback to default
+    for k, v in pairs(DefaultConfig) do
+        if getgenv().SniperConfig[k] == nil then
+            getgenv().SniperConfig[k] = v
+        end
+    end
+end
+
+local function SaveConfig()
+    if writefile then
+        pcall(writefile, CONFIG_FILE, HttpService:JSONEncode(getgenv().SniperConfig))
+    end
+end
+
+LoadConfig()
+
+local function ParseNumber(val)
+    if type(val) == "number" then return val end
+    if type(val) ~= "string" or val == "" then return 0 end
+    val = val:lower():gsub("%s+", ""):gsub(",", "")
+    local mult = 1
+    if val:find("k$") then
+        mult = 1e3
+        val = val:sub(1, -2)
+    elseif val:find("m$") then
+        mult = 1e6
+        val = val:sub(1, -2)
+    elseif val:find("b$") then
+        mult = 1e9
+        val = val:sub(1, -2)
+    elseif val:find("t$") then
+        mult = 1e12
+        val = val:sub(1, -2)
+    end
+    local num = tonumber(val)
+    return num and math.floor(num * mult) or 0
+end
+
+local Suffixes = {"k", "m", "b", "t"}
+local function FormatNumber(val)
+    if not val or type(val) ~= "number" then return "0" end
+    if val == 0 then return "0" end
+    local absVal = math.abs(val)
+    if absVal < 1000 then return tostring(val) end
+    local exp = math.floor(math.log(absVal, 1000))
+    exp = math.min(exp, #Suffixes)
+    local scaled = val / (1000 ^ exp)
+    return string.format("%.2f%s", scaled, Suffixes[exp]):gsub("%.00", "")
+end
+
+local function GetPlayerDiamonds()
+    local ok, amt = pcall(function()
+        return CurrencyCmds.Get("Diamonds")
+    end)
+    if ok and type(amt) == "number" then return amt end
+    
+    local save = PlayerSave.Get()
+    if save and save.Inventory and save.Inventory.Currency then
+        for _, v in pairs(save.Inventory.Currency) do
+            if v.id == "Diamonds" then
+                return v._am or 0
+            end
+        end
+    end
+    return 0
+end
+
+local function CalculatePercent(rap, price)
+    if not rap or rap <= 0 or not price then return 0 end
+    return ((rap - price) / rap) * 100
+end
+
+-- Buy Limit Tracking Helpers
+getgenv().SniperBoughtStats = getgenv().SniperBoughtStats or {}
+
+local function GetRemainingBuyLimit(itemName)
+    local cfg = getgenv().SniperConfig
+    if not cfg.LimitBuyEnabled or not cfg.LimitBuy then
+        return math.huge
+    end
+    local limitVal = cfg.LimitBuy[itemName]
+    if limitVal == nil or limitVal == false then
+        return math.huge
+    end
+    local limit = ParseNumber(limitVal)
+    if limit <= 0 then
+        return math.huge
+    end
+    local bought = getgenv().SniperBoughtStats[itemName] or 0
+    return math.max(0, limit - bought)
+end
+
+-- Anti-AFK Setup
+if getgenv().SniperConfig.AntiAFK then
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        task.wait(0.5)
+        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+    end)
+    pcall(function()
+        Network.Fire("Idle Tracking: Stop Timer")
+    end)
+end
+
+-- Discord Webhook Alert
+local function SendSniperWebhook(itemInfo, boughtAmount, cost, rap, profit)
+    local cfg = getgenv().SniperConfig
+    if not cfg.WebhookEnabled or not cfg.WebhookURL or cfg.WebhookURL == "" or not httpRequest then
+        return
+    end
+
+    local percent = CalculatePercent(rap, cost)
+    local percentStr = percent > 0 and string.format("%.1f%% BELOW RAP", percent) or "Fixed Price"
+    local rarityColor = 0x00FF88
+    if itemInfo.Rarity and Rarities[itemInfo.Rarity] and Rarities[itemInfo.Rarity].Color then
+        rarityColor = tonumber("0x" .. Rarities[itemInfo.Rarity].Color:ToHex()) or 0x00FF88
+    end
+
+    local iconUrl = ""
+    if itemInfo.Icon and type(itemInfo.Icon) == "string" and itemInfo.Icon ~= "" then
+        local parsed = ParseAssetId(itemInfo.Icon)
+        if parsed then
+            iconUrl = "https://biggamesapi.io/image/" .. tostring(parsed)
+        end
+    end
+
+    local embed = {
+        title = "⚡ Item Sniped Successfully!",
+        color = rarityColor,
+        description = string.format(
+            "**📦 Item:** `%s` x%d\n" ..
+            "**💎 Cost:** `%s` (%s per)\n" ..
+            "**📊 RAP:** `%s` (%s)\n" ..
+            "**💰 Estimated Profit:** `%s` Gems\n" ..
+            "**🏦 Current Diamonds:** `%s`",
+            itemInfo.Display or itemInfo.ID,
+            boughtAmount,
+            FormatNumber(cost * boughtAmount),
+            FormatNumber(cost),
+            FormatNumber(rap),
+            percentStr,
+            FormatNumber(profit),
+            FormatNumber(GetPlayerDiamonds())
+        ),
+        timestamp = DateTime.now():ToIsoDate(),
+        footer = {
+            text = "PS99 Auto Sniper • User: " .. LocalPlayer.Name
+        }
+    }
+
+    if iconUrl ~= "" then
+        embed.thumbnail = { url = iconUrl }
+    end
+
+    local payload = HttpService:JSONEncode({
+        username = "PS99 Sniper Bot",
+        embeds = { embed }
+    })
+
+    task.spawn(function()
+        pcall(httpRequest, {
+            Url = cfg.WebhookURL,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = payload
+        })
+    end)
+end
+
+local function FindBoothsInteractive()
+    local getupvals = debug and debug.getupvalues or getupvalues
+    if getgc then
+        for _, f in ipairs(getgc(true)) do
+            if type(f) == "function" and (islclosure and islclosure(f) or true) then
+                local okInfo, info = pcall(debug.getinfo, f)
+                if okInfo and info and info.name == "updateAllInteracts" then
+                    local okUp, upvals = pcall(getupvals, f)
+                    if okUp and type(upvals) == "table" and type(upvals[3]) == "table" then
+                        return upvals[3]
+                    end
+                end
+            end
+        end
+    end
+    return {}
+end
+
+-- Teleport Character to Seller's Booth to bypass "You are too far away!" server check
+local function TeleportToBooth(sellerUserId, boothData)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+    if not hrp then return end
+
+    local function TeleportToPart(interactPart)
+        if not interactPart then return false end
+        local cf = nil
+        if interactPart:IsA("BasePart") then
+            cf = interactPart.CFrame
+        elseif interactPart:IsA("Model") then
+            cf = interactPart:GetPivot()
+        end
+        if cf then
+            -- Teleport directly onto the interact part
+            hrp.CFrame = cf + Vector3.new(0, 1, 0)
+            pcall(function()
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+            task.wait(0.15) -- Ultra-fast 150ms position sync delay for maximum speed advantage
+            return true
+        end
+        return false
+    end
+
+    -- 1. Try boothData.Model or boothData.BoothID
+    if boothData and type(boothData) == "table" then
+        if boothData.Model and TeleportToPart(boothData.Model:FindFirstChild("Interact") or boothData.Model) then
+            return
+        end
+    end
+
+    -- 2. Try BoothsInteractive via GC or updateAllInteracts
+    local boothsInteractive = FindBoothsInteractive()
+    if boothData and boothData.BoothID and boothsInteractive[boothData.BoothID] then
+        local bModel = boothsInteractive[boothData.BoothID]
+        if TeleportToPart(bModel:FindFirstChild("Interact") or bModel) then
+            return
+        end
+    end
+
+    -- Search BoothsInteractive by sellerUserId
+    for bId, bModel in pairs(boothsInteractive) do
+        if typeof(bModel) == "Instance" and bModel:IsA("Model") then
+            local owner = bModel:GetAttribute("Owner") or bModel:GetAttribute("PlayerID")
+            if owner == sellerUserId or tostring(owner):find(tostring(sellerUserId)) then
+                if TeleportToPart(bModel:FindFirstChild("Interact") or bModel) then
+                    return
+                end
+            end
+        end
+    end
+
+    -- 3. Search Trading Plaza Workspace for Booth models
+    local map = workspace:FindFirstChild("Map") or workspace:FindFirstChild("TradingPlaza") or workspace
+    for _, obj in ipairs(map:GetDescendants()) do
+        if obj:IsA("Model") and (obj.Name:find("Booth") or obj.Name:find("booth")) then
+            local owner = obj:GetAttribute("Owner") or obj:GetAttribute("PlayerID") or obj:GetAttribute("UserId") or obj:GetAttribute("Player")
+            if owner == sellerUserId or tostring(owner):find(tostring(sellerUserId)) then
+                if TeleportToPart(obj:FindFirstChild("Interact") or obj) then
+                    return
+                end
+            end
+        end
+    end
+end
+
+-- Purchase Execution
+local function AttemptPurchase(sellerUserId, itemUID, itemInfo, buyAmount, boothData)
+    local cfg = getgenv().SniperConfig
+    local remainingLimit = GetRemainingBuyLimit(itemInfo.ID)
+    if remainingLimit <= 0 then
+        warn(string.format("[SNIPER] Buy limit reached for %s!", itemInfo.ID))
+        return false
+    end
+
+    buyAmount = math.min(buyAmount, math.floor(remainingLimit))
+    if buyAmount <= 0 then return false end
+
+    local totalCost = itemInfo.Cost * buyAmount
+    local currentGems = GetPlayerDiamonds()
+    
+    if currentGems - totalCost < (cfg.MinDiamonds or 0) then
+        warn(string.format("[SNIPER] Cannot afford purchase! Gems: %s, Cost: %s", FormatNumber(currentGems), FormatNumber(totalCost)))
+        return false
+    end
+
+    -- Teleport to seller booth to bypass distance check
+    TeleportToBooth(sellerUserId, boothData)
+
+    -- Caller payload matching BoothCmds.lua:590 signature requirements
+    local CallerPayload = {
+        ["Caller"] = {
+            ["LineNumber"] = 532,
+            ["ParameterCount"] = 2,
+            ["Variadic"] = false,
+            ["Traceback"] = "ReplicatedStorage.Library.Client.BoothCmds:532 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:659 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:998",
+            ["ScriptPath"] = "ReplicatedStorage.Library.Client.BoothCmds",
+            ["ScriptClass"] = "ModuleScript",
+            ["FunctionName"] = "PromptPurchase2",
+            ["Handle"] = "function: 0x20f99ee1e6d92aa0",
+            ["ScriptType"] = "Instance",
+            ["SourceIdentifier"] = "ReplicatedStorage.Library.Client.BoothCmds"
+        }
+    }
+
+    print(string.format("[SNIPER] 🛒 Attempting to buy x%d %s for %s Gems each from User %s", buyAmount, itemInfo.Display, FormatNumber(itemInfo.Cost), tostring(sellerUserId)))
+
+    local ok, success, errCode = pcall(function()
+        return Network.Invoke("Booths_RequestPurchase", sellerUserId, { [itemUID] = buyAmount }, CallerPayload)
+    end)
+
+    -- If failed due to distance replication lag, re-teleport and retry once!
+    if not (ok and success) and errCode and tostring(errCode):find("far away") then
+        warn("[SNIPER] ⚠️ Distance replication lag detected! Re-teleporting and retrying purchase...")
+        TeleportToBooth(sellerUserId, boothData)
+        task.wait(0.5)
+        ok, success, errCode = pcall(function()
+            return Network.Invoke("Booths_RequestPurchase", sellerUserId, { [itemUID] = buyAmount }, CallerPayload)
+        end)
+    end
+
+    if ok and success then
+        getgenv().SniperBoughtStats = getgenv().SniperBoughtStats or {}
+        getgenv().SniperBoughtStats[itemInfo.ID] = (getgenv().SniperBoughtStats[itemInfo.ID] or 0) + buyAmount
+
+        local rap = itemInfo.RAP or itemInfo.Cost
+        local profit = (rap - itemInfo.Cost) * buyAmount
+        print(string.format("[SNIPER] ✅ BOUGHT SUCCESS! %s x%d (Total bought: %d)", itemInfo.Display, buyAmount, getgenv().SniperBoughtStats[itemInfo.ID]))
+        SendSniperWebhook(itemInfo, buyAmount, itemInfo.Cost, rap, profit)
+        return true
+    else
+        warn(string.format("[SNIPER ❌] Purchase failed or race condition! Reason: %s", tostring(errCode)))
+        return false
+    end
+end
+
+-- Evaluates if an item listing meets sniper criteria
+local function ShouldBuyItem(itemInfo)
+    local cfg = getgenv().SniperConfig
+    local name = itemInfo.ID
+
+    -- Check Buy Limit
+    if GetRemainingBuyLimit(name) <= 0 then
+        return false, nil
+    end
+
+    local cost = itemInfo.Cost
+    local rap = itemInfo.RAP or 0
+    local percentOff = CalculatePercent(rap, cost)
+
+    -- 1. Fixed Price Rules (Always active if configured)
+    if cfg.FixedPrices and cfg.FixedPrices[name] ~= nil then
+        local maxPrice = ParseNumber(cfg.FixedPrices[name])
+        if maxPrice > 0 and cost <= maxPrice then
+            return true, "Fixed Price Match"
+        end
+    end
+
+    -- 2. Percent Below RAP Rules (Controlled by PercentBelowRAPEnabled master switch)
+    if cfg.PercentBelowRAPEnabled ~= false then
+        -- Global Category Rules for Huges & Titanics
+        if itemInfo.IsHuge and cfg.BuyAllHugesBelowRAP and percentOff >= (cfg.HugeMinPercentOff or 25) then
+            return true, "Huge Below RAP"
+        end
+        if itemInfo.IsTitanic and cfg.BuyAllTitanicsBelowRAP and percentOff >= (cfg.TitanicMinPercentOff or 20) then
+            return true, "Titanic Below RAP"
+        end
+
+        -- Item-specific Percent RAP Rule
+        if cfg.PercentBelowRAP and cfg.PercentBelowRAP[name] ~= nil then
+            local targetPercent = cfg.PercentBelowRAP[name]
+            if type(targetPercent) == "number" and targetPercent > 0 and percentOff >= targetPercent then
+                return true, string.format("Percent Below RAP Match (%d%% off)", targetPercent)
+            end
+        end
+
+        -- Category-based Percent RAP Rule (e.g. Exclusive)
+        if itemInfo.IsExclusive and cfg.PercentBelowRAP and cfg.PercentBelowRAP["Exclusive"] then
+            local excPercent = cfg.PercentBelowRAP["Exclusive"]
+            if type(excPercent) == "number" and excPercent > 0 and percentOff >= excPercent then
+                return true, string.format("Exclusive Below RAP Match (%d%% off)", excPercent)
+            end
+        end
+    end
+
+    return false, nil
+end
+
+local function FindGetState()
+    local getupvals = debug and debug.getupvalues or getupvalues
+
+    -- 1. Search PlayerScripts running scripts
+    if LocalPlayer:FindFirstChild("PlayerScripts") then
+        for _, s in ipairs(LocalPlayer.PlayerScripts:GetDescendants()) do
+            if s:IsA("LocalScript") then
+                local ok, env = pcall(getsenv, s)
+                if ok and type(env) == "table" and env.getState and type(env.getState) == "function" then
+                    return env.getState, env
+                end
+            end
+        end
+    end
+
+    -- 2. ReplicatedStorage BoothCmds module require
+    local boothScript = NLibrary.Client:FindFirstChild("BoothCmds") or (LocalPlayer.PlayerScripts.Scripts:FindFirstChild("Game") and LocalPlayer.PlayerScripts.Scripts.Game:FindFirstChild("Trading Plaza") and LocalPlayer.PlayerScripts.Scripts.Game["Trading Plaza"]:FindFirstChild("Booths Frontend"))
+    if boothScript then
+        local okEnv, env = pcall(getsenv, boothScript)
+        if okEnv and type(env) == "table" and env.getState then
+            return env.getState, env
+        end
+        local okReq, mod = pcall(require, boothScript)
+        if okReq and type(mod) == "table" and mod.getState then
+            return mod.getState, mod
+        end
+    end
+
+    -- 3. GC Search
+    if getgc then
+        for _, f in ipairs(getgc(true)) do
+            if type(f) == "function" and islclosure and islclosure(f) then
+                local info = debug.getinfo(f)
+                if info and info.name == "getState" then
+                    return f, getfenv and getfenv(f) or {}
+                end
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+-- Fast & Safe Server Booth Scanner (Zero CPU Lag)
+local function ScanServerBooths()
+    local getupvals = debug and debug.getupvalues or getupvalues
+    local getStateFunc, env = FindGetState()
+    if not getStateFunc then return 0 end
+
+    local okUp, upvals = pcall(getupvals, getStateFunc)
+    if not okUp or not upvals then return 0 end
+
+    local snipedCount = 0
+
+    for _, upvalTable in ipairs(upvals) do
+        if type(upvalTable) == "table" then
+            for userKey, boothData in pairs(upvalTable) do
+                if type(boothData) == "table" and boothData.Listings then
+                    local sellerUserId = nil
+                    if typeof(userKey) == "Instance" and userKey:IsA("Player") then
+                        sellerUserId = userKey.UserId
+                    elseif type(userKey) == "number" then
+                        sellerUserId = userKey
+                    elseif type(userKey) == "string" then
+                        if userKey:find(LocalPlayer.Name) then continue end
+                    end
+
+                    if sellerUserId and sellerUserId == LocalPlayer.UserId then
+                        continue
+                    end
+
+                    if not sellerUserId and type(boothData.Player) == "userdata" and boothData.Player:IsA("Player") then
+                        sellerUserId = boothData.Player.UserId
+                    end
+
+                    for uid, listingItem in pairs(boothData.Listings) do
+                        local rawItem = listingItem.Item
+                        if not rawItem then continue end
+
+                        local itemId = (rawItem._data and rawItem._data.id) or (rawItem.GetId and rawItem:GetId()) or "Unknown"
+                        local cost = listingItem.DiamondCost or 0
+                        if cost <= 0 then continue end
+
+                        local amount = (rawItem._data and rawItem._data._am) or 1
+                        local rap = (rawItem.GetDevRAP and rawItem:GetDevRAP()) or (rawItem.GetRAP and rawItem:GetRAP()) or 0
+
+                        local icon = nil
+                        if rawItem.GetIcon and type(rawItem.GetIcon) == "function" then
+                            pcall(function() icon = rawItem:GetIcon() end)
+                        end
+
+                        local itemInfo = {
+                            UID = uid,
+                            ID = itemId,
+                            Cost = cost,
+                            Amount = amount,
+                            RAP = rap,
+                            IsHuge = rawItem.IsHuge and rawItem:IsHuge() or false,
+                            IsTitanic = rawItem.IsTitanic and rawItem:IsTitanic() or false,
+                            IsExclusive = rawItem.GetRarity and rawItem:GetRarity()._id == "Exclusive" or false,
+                            Icon = icon,
+                            Rarity = rawItem.GetRarity and rawItem:GetRarity()._id or "Common",
+                            Display = itemId
+                        }
+
+                        local shouldBuy, reason = ShouldBuyItem(itemInfo)
+                        if shouldBuy and sellerUserId then
+                            print(string.format("[SNIPER] 🎯 Found Target! [%s] %s @ %s Gems (RAP: %s) - Reason: %s",
+                                itemInfo.ID, itemInfo.Display, FormatNumber(itemInfo.Cost), FormatNumber(itemInfo.RAP), reason))
+
+                            local maxAfford = math.floor(GetPlayerDiamonds() / itemInfo.Cost)
+                            local buyAmount = math.min(itemInfo.Amount, maxAfford)
+
+                            if buyAmount > 0 then
+                                if AttemptPurchase(sellerUserId, uid, itemInfo, buyAmount, boothData) then
+                                    snipedCount = snipedCount + 1
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return snipedCount
+end
+
+-- Trading Terminal Targeted Server Hop
+local function SearchItemOnTerminal(class, searchTable)
+    local encodedParts = {}
+    for _, k in ipairs({"id", "pt", "sh", "tn"}) do
+        local v = searchTable[k]
+        if v ~= nil then
+            local valStr = type(v) == "string" and ('"' .. v .. '"') or tostring(v)
+            table.insert(encodedParts, '"' .. k .. '":' .. valStr)
+        end
+    end
+    local queryStr = "{" .. table.concat(encodedParts, ",") .. "}"
+
+    local ok, res = pcall(function()
+        return ReplicatedStorage.Network.TradingTerminal_Search:InvokeServer(class, queryStr, nil, false)
+    end)
+
+    if ok and type(res) == "table" and res.place_id and res.job_id then
+        return res.place_id, res.job_id
+    end
+    return nil
+end
+
+-- Resolve target plaza place ID
+local function GetTargetPlazaId()
+    local cfg = getgenv().SniperConfig
+    local pType = cfg.PlazaType
+    if pType == "Normal" then
+        return PLAZA_PLACES.Normal
+    elseif pType == "Pro" then
+        return PLAZA_PLACES.Pro
+    elseif pType == "Auto" then
+        -- Default to Normal plaza (15502339080) first
+        local canPro = false
+        pcall(function()
+            if TradingPlazaCmds and TradingPlazaCmds.GetAvailable and #TradingPlazaCmds.GetAvailable() > 1 then
+                canPro = true
+            end
+        end)
+        if canPro then
+            return math.random(1, 2) == 1 and PLAZA_PLACES.Normal or PLAZA_PLACES.Pro
+        end
+        return PLAZA_PLACES.Normal
+    end
+    return PLAZA_PLACES.Normal
+end
+
+-- Serverhop Utilities
+local JoinedJobs = {}
+local function HopServer()
+    local cfg = getgenv().SniperConfig
+    print("[SNIPER] 🚀 Preparing Serverhop...")
+
+    -- 1. Try Targeted Hop via Trading Terminal for FixedPrice items
+    if cfg.FixedPrices then
+        for itemID, maxPrice in pairs(cfg.FixedPrices) do
+            local placeId, jobId = SearchItemOnTerminal("Misc", { id = itemID })
+            if not placeId then
+                placeId, jobId = SearchItemOnTerminal("Pet", { id = itemID })
+            end
+            if placeId and jobId and jobId ~= game.JobId and not table.find(JoinedJobs, jobId) then
+                table.insert(JoinedJobs, jobId)
+                print(string.format("[SNIPER] 🎯 Terminal found server for %s! Teleporting to %s...", itemID, jobId))
+                pcall(function()
+                    TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+                end)
+                task.wait(5)
+                return
+            end
+        end
+    end
+
+    -- 2. Fallback Public Server Hop
+    local targetPlaceId = GetTargetPlazaId()
+    local url = string.format("https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Desc&limit=100", tostring(targetPlaceId))
+    
+    local ok, body = pcall(function()
+        return game:HttpGet(url)
+    end)
+
+    if ok and body then
+        local data = pcall(HttpService.JSONDecode, HttpService, body) and HttpService:JSONDecode(body)
+        if data and data.data then
+            for _, s in ipairs(data.data) do
+                if s.id ~= game.JobId and s.playing < s.maxPlayers and s.playing >= 5 and not table.find(JoinedJobs, s.id) then
+                    table.insert(JoinedJobs, s.id)
+                    if #JoinedJobs > 15 then table.remove(JoinedJobs, 1) end
+                    print(string.format("[SNIPER] 🌐 Teleporting to Public Server %s (%d/%d players)...", s.id, s.playing, s.maxPlayers))
+                    pcall(function()
+                        TeleportService:TeleportToPlaceInstance(targetPlaceId, s.id, LocalPlayer)
+                    end)
+                    task.wait(5)
+                    return
+                end
+            end
+        end
+    end
+
+    -- 3. Last Fallback Teleport
+    pcall(function()
+        TeleportService:Teleport(targetPlaceId, LocalPlayer)
+    end)
+end
+
+-- Main Loop
+task.spawn(function()
+    print("=============================================")
+    print(" 🚀 PS99 Auto Booth Sniper Started!")
+    print("=============================================")
+
+    -- Auto Teleport to Plaza if executed outside of Trading Plaza
+    if game.PlaceId ~= PLAZA_PLACES.Normal and game.PlaceId ~= PLAZA_PLACES.Pro then
+        print("[SNIPER] Currently not in Trading Plaza. Teleporting to Plaza...")
+        HopServer()
+        return
+    end
+
+    local startTime = os.time()
+
+    while task.wait(1) do
+        local cfg = getgenv().SniperConfig
+        if not cfg.Enabled then continue end
+
+        -- Scan current server
+        local count = ScanServerBooths()
+
+        -- AutoHop timer check
+        if cfg.AutoHop and (os.time() - startTime) >= (cfg.HopDelay or 5) then
+            if count == 0 then
+                HopServer()
+                startTime = os.time()
+            end
+        end
+    end
+end)
+
+-- Global Control Functions for User Console
+getgenv().ToggleSniper = function(state)
+    getgenv().SniperConfig.Enabled = state
+    SaveConfig()
+    print("[SNIPER] Enabled set to: " .. tostring(state))
+end
+
+getgenv().SetSniperWebhook = function(url)
+    getgenv().SniperConfig.WebhookURL = url
+    getgenv().SniperConfig.WebhookEnabled = true
+    SaveConfig()
+    print("[SNIPER] Webhook URL updated!")
+end
+
+getgenv().TogglePercentRAP = function(state)
+    getgenv().SniperConfig.PercentBelowRAPEnabled = state
+    SaveConfig()
+    print("[SNIPER] PercentBelowRAPEnabled set to: " .. tostring(state))
+end
+
+getgenv().SetItemPercentRAP = function(itemName, percentOrFalse)
+    getgenv().SniperConfig.PercentBelowRAP[itemName] = percentOrFalse
+    SaveConfig()
+    print(string.format("[SNIPER] PercentBelowRAP['%s'] set to: %s", itemName, tostring(percentOrFalse)))
+end
+
+getgenv().ToggleLimitBuy = function(state)
+    getgenv().SniperConfig.LimitBuyEnabled = state
+    SaveConfig()
+    print("[SNIPER] LimitBuyEnabled set to: " .. tostring(state))
+end
+
+getgenv().SetLimitBuy = function(itemName, limitOrFalse)
+    getgenv().SniperConfig.LimitBuy[itemName] = limitOrFalse
+    SaveConfig()
+    print(string.format("[SNIPER] LimitBuy['%s'] set to: %s", itemName, tostring(limitOrFalse)))
+end
+
+getgenv().ResetBuyStats = function()
+    getgenv().SniperBoughtStats = {}
+    print("[SNIPER] Reset all item bought statistics to 0!")
+end
