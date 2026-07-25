@@ -1,5 +1,5 @@
 --[[
-    Pet Sddddddimulator 99 - Auto Booth Sniper (Optimized & Crash-Proof Remake)
+    Pet Simulator 99 - Auto Booth Sniper (Optimized & Crash-Proof Remake)
     Author: Antigravity AI & Hoang Hai Workspace
     Features:
     - Zero-Lag Booth Memory State Hooking (getsenv / getupvalues)
@@ -709,10 +709,19 @@ local queue_on_teleport = queue_on_teleport or queueonteleport or (syn and syn.q
 
 local function QueueReexecution()
     if queue_on_teleport then
-        pcall(queue_on_teleport, [[
-            repeat task.wait() until game:IsLoaded()
-            print("[SNIPER] Re-executing sniper after server hop...")
-        ]])
+        local code = [[
+            repeat task.wait() until game:IsLoaded() and game:GetService("Players").LocalPlayer
+            task.wait(1)
+            print("[SNIPER] 🚀 Successfully joined new server!")
+        ]]
+        if isfile then
+            if isfile("sniper.lua") then
+                code = code .. "\npcall(function() loadstring(readfile('sniper.lua'))() end)"
+            elseif isfile("p99/plaza/sniper/sniper.lua") then
+                code = code .. "\npcall(function() loadstring(readfile('p99/plaza/sniper/sniper.lua'))() end)"
+            end
+        end
+        pcall(queue_on_teleport, code)
     end
 end
 
