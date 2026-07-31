@@ -1,0 +1,3423 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+
+-- Đảm bảo LocalPlayer đã được khởi tạo và Game đã load xong data
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.1)
+    LocalPlayer = Players.LocalPlayer
+end
+
+-- Đợi server PS99 báo hiệu data đã load xong hoàn toàn (__LOADED)
+repeat task.wait(0.5) until LocalPlayer:GetAttribute("__LOADED")
+
+-- Đợi Character và HumanoidRootPart xuất hiện (Server PS99 sẽ từ chối claim booth nếu chưa có Character)
+if not LocalPlayer.Character then 
+    LocalPlayer.CharacterAdded:Wait() 
+end
+local character = LocalPlayer.Character
+if not character:FindFirstChild("HumanoidRootPart") then
+    character:WaitForChild("HumanoidRootPart", 10)
+end
+task.wait(1) -- Nghỉ 1 giây để server PS99 load xong data và hết join cooldown trước khi claim quầy
+
+
+
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Library = ReplicatedStorage:WaitForChild("Library")
+local Network = require(Library:WaitForChild("Client"):WaitForChild("Network"))
+local Signal = require(Library:WaitForChild("Signal"))
+
+-- 1. Cấu hình mặc định toàn cục
+getgenv().PlazaSellConfig = getgenv().PlazaSellConfig or {
+    Enabled = true,
+    PlazaType = "Auto Select",
+    AutoTeleport = true,
+    RapMultiplier = 0.95,
+    MinPrice = 1000,
+    MaxSlots = 25,
+    Categories = { "Pet", "Huge", "Titanic", "Gargantuan", "Enchant", "Potion", "Egg", "Hoverboard", "Charm", "Lootbox", "Ultimate", "Misc", "Booth" },
+    CustomPrices = {}, -- Giá bán cố định cho từng item: [itemName] = price
+    CustomQuantities = {}, -- Số lượng bán cho từng item: [itemName] = number or "All"
+    CustomListingsLimit = {}, -- Số lần treo tối đa cho từng item: [itemName] = number or "All"
+    CategoryRules = {}, -- Bán theo loại: [CategoryName] = { Mode = "Fixed" or "RAP", Price = 1000, Percent = -5 }
+    AutoHop = false,
+    MinPlayers = 5,
+    AutoRejoinRAM = 4000, -- Giới hạn RAM (MB) để Auto Hop (Mặc định: 4000MB)
+    AutoRejoinTime = 10800, -- Thời gian nhảy server (giây): 3600s = 1 tiếng, 10800s = 3 tiếng
+    WebhookURL = "",
+    AntiAFK = true,
+    Language = "Tiếng Việt",
+}
+
+-- 2. Hệ thống Tự động Lưu & Nạp Cấu Hình
+local CONFIG_FILE = "PlazaSellConfig.json"
+
+local function saveConfig()
+    local success, err = pcall(function()
+        if writefile then
+            local data = HttpService:JSONEncode(getgenv().PlazaSellConfig)
+            writefile(CONFIG_FILE, data)
+            print("[CONFIG] Configuration successfully saved to " .. CONFIG_FILE)
+        end
+    end)
+    if not success then
+        warn("[CONFIG] Error saving configuration:", err)
+    end
+end
+
+local function loadConfig()
+    local success, data = pcall(function()
+        if isfile and readfile and isfile(CONFIG_FILE) then
+            return readfile(CONFIG_FILE)
+        end
+    end)
+    if success and data then
+        local decoded = HttpService:JSONDecode(data)
+        if decoded then
+            for k, v in pairs(decoded) do
+                getgenv().PlazaSellConfig[k] = v
+            end
+            print("[CONFIG] Configuration loaded successfully from " .. CONFIG_FILE)
+        end
+    end
+end
+
+loadConfig()
+
+-- 3. Các hàm bổ trợ xử lý số
+local function parseNumber(str)
+    if not str or str == "" then return nil end
+    str = str:lower():gsub("%s+", ""):gsub(",", "")
+    local multiplier = 1
+    if str:find("k$") then
+        multiplier = 1e3
+        str = str:sub(1, -2)
+    elseif str:find("m$") then
+        multiplier = 1e6
+        str = str:sub(1, -2)
+    elseif str:find("b$") then
+        multiplier = 1e9
+        str = str:sub(1, -2)
+    elseif str:find("t$") then
+        multiplier = 1e12
+        str = str:sub(1, -2)
+    end
+    local num = tonumber(str)
+    return num and math.floor(num * multiplier) or nil
+end
+
+local function formatNumber(num)
+    if not num then return "" end
+    if num >= 1e12 then
+        return string.format("%.2ft", num / 1e12):gsub("%.00t", "t"):gsub("%.([0-9])0t", ".%1t")
+    elseif num >= 1e9 then
+        return string.format("%.2fb", num / 1e9):gsub("%.00b", "b"):gsub("%.([0-9])0b", ".%1b")
+    elseif num >= 1e6 then
+        return string.format("%.2fm", num / 1e6):gsub("%.00m", "m"):gsub("%.([0-9])0m", ".%1m")
+    elseif num >= 1e3 then
+        return string.format("%.2fk", num / 1e3):gsub("%.00k", "k"):gsub("%.([0-9])0k", ".%1k")
+    end
+    return tostring(num)
+end
+
+-- Hàm lấy link ảnh trực tiếp từ Roblox CDN (Để hiển thị được trên Discord Webhook mà không gây giật lag)
+local function getAssetThumbnailUrl(assetId)
+    if not assetId then return "" end
+    assetId = tostring(assetId):match("%d+")
+    if not assetId then return "" end
+    return "https://biggamesapi.io/image/" .. assetId
+end
+getgenv().GetAssetThumbnailUrl = getAssetThumbnailUrl
+
+-- Hệ thống Đa Ngôn Ngữ (Translation System)
+local StringMap = {
+    ["Kích hoạt Auto Sell"] = "Enable Auto Sell",
+    ["Chế độ Plaza"] = "Plaza Mode",
+    ["Tự dịch chuyển đến Plaza"] = "Auto Teleport to Plaza",
+    ["Bật chống treo máy (Anti-AFK)"] = "Enable Anti-AFK",
+    ["Tự động nhảy server (Auto Server Hop)"] = "Auto Server Hop",
+    ["Ngưỡng người chơi tối thiểu"] = "Minimum Players",
+    ["Đường dẫn Discord Webhook"] = "Discord Webhook URL",
+    ["Gửi tin nhắn chạy thử (Webhook Test)"] = "Send Webhook Test Log",
+    ["UI Language"] = "UI Language",
+    ["Số slot quầy tối đa (Max Slots)"] = "Max Booth Slots",
+    ["Giới hạn RAM nhảy server (MB)"] = "RAM Limit (MB)",
+    ["Thời gian tự động nhảy server (giây)"] = "Auto Rejoin Time (Seconds)",
+    ["Tự động nhảy server sau khoảng thời gian này (0 = Tắt)"] = "Automatically server hop after this many seconds (0 = Off)",
+    ["Chế độ siêu nhẹ (Potato Mode)"] = "Potato Mode",
+    ["Giá Kho Đồ"] = "Inventory Pricing",
+    ["Giá Đã Lưu"] = "Saved Prices",
+    ["Hệ Thống"] = "System Settings",
+    ["Tự Động Bán"] = "Auto Sell",
+    ["Chọn vật phẩm..."] = "Select item...",
+    ["Giá bán:"] = "Sell Price:",
+    ["Tỷ lệ RAP:"] = "RAP Ratio:",
+    ["Số lượng:"] = "Quantity:",
+    ["Lưu Giá"] = "Save Price",
+    ["Xóa Giá"] = "Clear Price",
+    ["Ví dụ: 10m, 100k"] = "E.g. 10m, 100k",
+    ["All hoặc số"] = "All or number",
+    ["Hòm đồ mục này đang trống."] = "Inventory category is empty.",
+    ["Không có vật phẩm tương ứng."] = "No matching items found.",
+    ["Chưa có cấu hình giá vật phẩm nào được lưu."] = "No custom prices have been saved yet.",
+    ["Xóa"] = "Delete",
+    ["Sửa"] = "Edit",
+    ["Giá:"] = "Price:",
+    ["SL:"] = "Qty:",
+    ["Ngôn ngữ giao diện (Language)"] = "UI Language",
+    ["Chọn ngôn ngữ hiển thị: Tiếng Việt hoặc English"] = "Select display language: Vietnamese or English",
+    ["Tự động tìm kiếm quầy hàng trống và restock vật phẩm"] = "Automatically find empty booths and restock items",
+    ["Lựa chọn loại máy chủ dịch chuyển"] = "Select destination plaza server type",
+    ["Tự động bay màu sang Plaza nếu phát hiện ở thế giới chính"] = "Automatically teleport to plaza if in main world",
+    ["Hạn chế tối đa việc bị Roblox kick sau 20 phút không hoạt động"] = "Prevent getting kicked by Roblox after 20 mins of inactivity",
+    ["Tìm phòng plaza mới nếu chợ vắng hoặc hết đồ treo bán"] = "Find a new plaza server if empty or sold out",
+    ["Nhảy server plaza khác nếu số người chơi hiện tại bằng hoặc dưới mức này"] = "Hop server if player count is at or below this number",
+    ["URL nhận log doanh thu giao dịch tự động"] = "URL to receive automated sales logs",
+    ["Đang sửa từ cấu hình đã lưu"] = "Editing from saved config",
+    ["Thử nghiệm thành công"] = "Test success",
+    ["Vật phẩm đã bán thành công!"] = "Item sold successfully!",
+    ["Đã lưu cấu hình giá của "] = "Saved custom price of ",
+    ["Đã xóa cấu hình giá của "] = "Cleared custom price of "
+}
+
+local ReverseStringMap = {}
+for vi, en in pairs(StringMap) do
+    ReverseStringMap[en] = vi
+end
+
+local function applyTranslations(parent)
+    if not parent or not getgenv().PlazaSellConfig then return end
+    local isEng = getgenv().PlazaSellConfig.Language == "English"
+    local map = isEng and StringMap or ReverseStringMap
+    
+    local function traverse(obj)
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+            local current = obj.Text
+            if map[current] then
+                obj.Text = map[current]
+            else
+                for sourceStr, destStr in pairs(map) do
+                    if current == sourceStr then
+                        obj.Text = destStr
+                        break
+                    elseif current:find(sourceStr, 1, true) then
+                        current = current:gsub(sourceStr, destStr)
+                    end
+                end
+                obj.Text = current
+            end
+            if obj:IsA("TextBox") and obj.PlaceholderText then
+                local ph = obj.PlaceholderText
+                if map[ph] then
+                    obj.PlaceholderText = map[ph]
+                end
+            end
+        end
+        for _, child in ipairs(obj:GetChildren()) do
+            traverse(child)
+        end
+    end
+    traverse(parent)
+end
+
+-- Khởi tạo bảng thống kê toàn cục
+getgenv().PlazaSellStats = getgenv().PlazaSellStats or {
+    SalesLog = {} -- Danh sách giao dịch: { timestamp, name, price, amount }
+}
+
+-- Hàm lưu một giao dịch mới
+local function recordSale(itemName, price, amount)
+    local stats = getgenv().PlazaSellStats
+    table.insert(stats.SalesLog, {
+        timestamp = os.time(),
+        name = itemName,
+        price = price,
+        amount = amount or 1
+    })
+    
+    -- Dọn dẹp log cũ hơn 24 giờ (86400 giây)
+    local now = os.time()
+    local activeLog = {}
+    for _, sale in ipairs(stats.SalesLog) do
+        if now - sale.timestamp <= 86400 then
+            table.insert(activeLog, sale)
+        end
+    end
+    stats.SalesLog = activeLog
+end
+getgenv().RecordSale = recordSale
+
+-- Hàm tính tổng số lượng đã bán trong 1 giờ
+local function getSalesCount1H()
+    local now = os.time()
+    local count = 0
+    for _, sale in ipairs(getgenv().PlazaSellStats.SalesLog) do
+        if now - sale.timestamp <= 3600 then
+            count = count + (sale.amount or 1)
+        end
+    end
+    return count
+end
+
+-- Hàm tính tổng số lượng đã bán trong 24 giờ
+local function getSalesCount24H()
+    local now = os.time()
+    local count = 0
+    for _, sale in ipairs(getgenv().PlazaSellStats.SalesLog) do
+        if now - sale.timestamp <= 86400 then
+            count = count + (sale.amount or 1)
+        end
+    end
+    return count
+end
+
+-- Hàm tính tổng Kim cương kiếm được trong 1 giờ
+local function getGems1H()
+    local now = os.time()
+    local total = 0
+    for _, sale in ipairs(getgenv().PlazaSellStats.SalesLog) do
+        if now - sale.timestamp <= 3600 then
+            total = total + sale.price
+        end
+    end
+    return total
+end
+
+-- Hàm tính tổng Kim cương kiếm được trong 24 giờ
+local function getGems24H()
+    local now = os.time()
+    local total = 0
+    for _, sale in ipairs(getgenv().PlazaSellStats.SalesLog) do
+        if now - sale.timestamp <= 86400 then
+            total = total + sale.price
+        end
+    end
+    return total
+end
+
+-- Hàm lấy số lượng Kim cương hiện tại của người chơi
+-- LUU Y: Diamonds la currency GOC nam o stats.Currency.Diamonds (KHONG nam trong Inventory,
+-- va KHONG phai field data.Diamonds truc tiep). Uu tien dung CurrencyCmds.Get("Diamonds").
+local function getPlayerDiamonds()
+    local success, count = pcall(function()
+        local ReplicatedStorage = game:GetService("ReplicatedStorage")
+        local Library = ReplicatedStorage:FindFirstChild("Library")
+        if Library then
+            local Client = Library:WaitForChild("Client")
+            local okCmds, CurrencyCmds = pcall(require, Client:WaitForChild("CurrencyCmds"))
+            if okCmds and CurrencyCmds and CurrencyCmds.Get then
+                local amt = CurrencyCmds.Get("Diamonds")
+                if type(amt) == "number" then return amt end
+            end
+
+            local Save = require(Client:WaitForChild("Save"))
+            local data = Save.Get()
+            if data then
+                if data.Currency and type(data.Currency.Diamonds) == "number" then
+                    return data.Currency.Diamonds
+                elseif data.Diamonds then
+                    return data.Diamonds
+                end
+            end
+        end
+    end)
+    if success and count then return count end
+    
+    -- Check leaderstats làm phương án dự phòng
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    local diamonds = leaderstats and (leaderstats:FindFirstChild("Diamonds") or leaderstats:FindFirstChild("💎 Diamonds") or leaderstats:FindFirstChild("Gems"))
+    if diamonds then
+        local val = tostring(diamonds.Value):gsub(",", ""):match("%d+")
+        return tonumber(val) or 0
+    end
+    return 0
+end
+getgenv().GetPlayerDiamonds = getPlayerDiamonds
+
+-- Hệ thống gom nhóm giao dịch gửi Webhook (Batch Webhook Notification)
+local pendingWebhookSales = {}
+local isWebhookBatchScheduled = false
+
+local function processBatchWebhook()
+    local salesToProcess = pendingWebhookSales
+    pendingWebhookSales = {}
+    isWebhookBatchScheduled = false
+    
+    if #salesToProcess == 0 then return end
+    
+    local config = getgenv().PlazaSellConfig
+    if not config then return end
+    local webhookURL = config.WebhookURL
+    if not webhookURL or webhookURL == "" or not webhookURL:find("https://discord.com/api/webhooks") then return end
+    
+    pcall(function()
+        -- Tổng hợp danh sách vật phẩm & tổng tiền trong đợt này
+        local itemSummary = {}
+        local grandTotalPrice = 0
+        local lastIconUrl = nil
+        
+        for _, sale in ipairs(salesToProcess) do
+            grandTotalPrice = grandTotalPrice + (sale.price or 0)
+            if sale.iconUrl and sale.iconUrl ~= "" then
+                lastIconUrl = sale.iconUrl
+            end
+            
+            if not itemSummary[sale.itemName] then
+                itemSummary[sale.itemName] = {
+                    amount = sale.amount or 1,
+                    price = sale.price or 0
+                }
+            else
+                itemSummary[sale.itemName].amount = itemSummary[sale.itemName].amount + (sale.amount or 1)
+                itemSummary[sale.itemName].price = itemSummary[sale.itemName].price + (sale.price or 0)
+            end
+        end
+        
+        local itemListLines = {}
+        for name, info in pairs(itemSummary) do
+            table.insert(itemListLines, string.format("%s x%d", name, info.amount))
+        end
+        local nameValueText = table.concat(itemListLines, "\n")
+        
+        local curDiamonds = getPlayerDiamonds()
+        local sold1H = getSalesCount1H()
+        local sold24H = getSalesCount24H()
+        local gems1H = getGems1H()
+        local gems24H = getGems24H()
+        
+        local isEng = config.Language == "English"
+        local titleText = isEng and "Item sold successfully!" or "Vật phẩm đã bán thành công!"
+        local nameField = isEng and "Item Name" or "Tên vật phẩm"
+        local priceField = isEng and "Sell Price" or "Giá bán"
+        local playerField = isEng and "Player" or "Người chơi"
+        local gemsOwnedField = isEng and "Gems Owned" or "Kim cương hiện có"
+        local amountSoldField = isEng and "Amount Sold" or "Số lượng bán được"
+        local gemsEarnedField = isEng and "Gems Earned" or "Kim cương kiếm được"
+        
+        local gemsValue = isEng and "💎" or "💎"
+        local soldSpeed = tostring(sold1H) .. (isEng and " items / hour\n" or " cái / giờ\n") .. tostring(sold24H) .. (isEng and " items / day" or " cái / ngày")
+        local gemsSpeed = "+" .. formatNumber(gems1H) .. (isEng and " / hour\n+" or " / giờ\n+") .. formatNumber(gems24H) .. (isEng and " / day" or " / ngày")
+        
+        local payload = HttpService:JSONEncode({
+            embeds = {
+                {
+                    title = titleText,
+                    color = 5814783,
+                    fields = {
+                        { name = nameField, value = nameValueText, inline = true },
+                        { name = priceField, value = formatNumber(grandTotalPrice) .. " " .. (isEng and "Gems" or "Kim cương"), inline = true },
+                        { name = playerField, value = LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")", inline = false },
+                        { name = gemsOwnedField, value = formatNumber(curDiamonds) .. " " .. gemsValue, inline = true },
+                        { name = amountSoldField, value = soldSpeed, inline = true },
+                        { name = gemsEarnedField, value = gemsSpeed, inline = true }
+                    },
+                    thumbnail = {
+                        url = lastIconUrl or getAssetThumbnailUrl(14293722239)
+                    },
+                    footer = {
+                        text = "Auto Sell Plaza Hub | Time: " .. os.date("%H:%M:%S")
+                    }
+                }
+            }
+        })
+        
+        local req = syn and syn.request or http and http.request or http_request or request
+        if req then
+            req({
+                Url = webhookURL,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = payload
+            })
+            print("[WEBHOOK DEBUG] Batched Webhook notification sent successfully!")
+        else
+            print("[WEBHOOK DEBUG] Executor does not support HTTP requests!")
+        end
+    end)
+end
+
+local function queueSaleForWebhook(itemName, amount, price, iconUrl)
+    table.insert(pendingWebhookSales, {
+        itemName = itemName,
+        amount = amount,
+        price = price,
+        iconUrl = iconUrl
+    })
+    
+    if not isWebhookBatchScheduled then
+        isWebhookBatchScheduled = true
+        task.spawn(function()
+            task.wait(3) -- Chờ 3 giây gom tất cả các giao dịch bán cùng lúc
+            processBatchWebhook()
+        end)
+    end
+end
+
+-- Lắng nghe sự kiện "Booths: Add History" từ game để bắn Discord Webhook
+Network.Fired("Booths: Add History"):Connect(function(saleLog)
+    print("[WEBHOOK DEBUG] Received Booths: Add History event!")
+    local success, err = pcall(function()
+        if not saleLog or not getgenv().PlazaSellConfig then 
+            print("[WEBHOOK DEBUG] Skipped: saleLog or configuration is empty")
+            return 
+        end
+        
+        local Types = require(Library:WaitForChild("Items"):WaitForChild("Types"))
+        local received = Types.DecodeUnpacked(saleLog.Received)
+        local given = Types.DecodeUnpacked(saleLog.Given)
+        
+        local price = 0
+        local soldItem = nil
+        local isSale = true
+        
+        for _, item in ipairs(received) do
+            if item:IsA("Currency") then
+                price = math.max(price, item:GetAmount() or 0)
+            else
+                soldItem = item
+                isSale = false -- Chúng ta NHẬN được vật phẩm => Đây là mua (Bought), không phải bán (Sold)!
+            end
+        end
+        
+        for _, item in ipairs(given) do
+            if item:IsA("Currency") then
+                price = math.max(price, item:GetAmount() or 0)
+            else
+                soldItem = item
+                -- isSale giữ nguyên là true vì vật phẩm ở bên GIVEN (Đã cho đi / Đã bán)
+            end
+        end
+        
+        if not soldItem then 
+            print("[WEBHOOK DEBUG] No sold item found in Given/Received payload")
+            return 
+        end
+        
+        if not isSale then
+            print("[WEBHOOK DEBUG] Skipped: Transaction is a Purchase, not a Sale")
+            return
+        end
+        
+        local itemName = soldItem:GetName()
+        local amount = soldItem:GetAmount() or 1
+        
+        print(string.format("[WEBHOOK DEBUG] Sold: %s x%d for %s Gems", itemName, amount, formatNumber(price)))
+        
+        -- Cập nhật số lượng quota còn lại khi có giao dịch bán
+        -- CHỈ cập nhật CustomQuantities, KHÔNG bao giờ xóa CustomPrices (cấu hình giá vĩnh viễn)
+        local config = getgenv().PlazaSellConfig
+        if config.CustomQuantities and config.CustomQuantities[itemName] then
+            local qty = config.CustomQuantities[itemName]
+            if type(qty) == "number" or tonumber(qty) then
+                local num = tonumber(qty)
+                local newQty = math.max(0, num - amount)
+                if newQty <= 0 then
+                    -- Đã bán đủ số lượng quota → reset về "All" để lần treo tiếp theo tự động dùng hết
+                    config.CustomQuantities[itemName] = "All"
+                else
+                    config.CustomQuantities[itemName] = newQty
+                end
+                saveConfig()
+            end
+        end
+        
+        -- Ghi nhận giao dịch
+        recordSale(itemName, price, amount)
+        saveConfig()
+        
+        -- Invalidate listing cache để bot quét ngay slot vừa trống
+        getgenv().PlazaSellListedCache = nil
+        if getgenv().PlazaSellSlotCache and getgenv().PlazaSellSlotCache > 0 then
+            getgenv().PlazaSellSlotCache = math.max(0, getgenv().PlazaSellSlotCache - 1)
+        end
+        
+        -- Đưa vào hàng đợi gom Webhook
+        local iconUrl = nil
+        local iconAsset = soldItem:GetIcon()
+        if iconAsset then
+            iconUrl = getAssetThumbnailUrl(iconAsset)
+        end
+        if not iconUrl or iconUrl == "" then
+            iconUrl = getAssetThumbnailUrl(14293722239)
+        end
+        
+        queueSaleForWebhook(itemName, amount, price, iconUrl)
+    end)
+    if not success then
+        warn("[WEBHOOK ERROR] Error in Booths: Add History listener connection:", err)
+    end
+end)
+
+
+
+-- Hàm lấy ảnh của vật phẩm từ rương đồ hoặc Directory toàn cục bằng tên
+local function getItemIconByName(itemName)
+    local iconId = nil
+    pcall(function()
+        local Save = require(Library:WaitForChild("Client"):WaitForChild("Save"))
+        local data = Save.Get()
+        local Types = require(Library:WaitForChild("Items"):WaitForChild("Types"))
+        
+        -- 1. Tìm trong rương đồ hiện tại
+        if data and data.Inventory then
+            for catName, catData in pairs(data.Inventory) do
+                for _, itemData in pairs(catData) do
+                    local success, itemObj = pcall(function() return Types.From(catName, itemData) end)
+                    if success and itemObj then
+                        if itemObj:GetName() == itemName then
+                            local icon = itemObj:GetIcon()
+                            if icon then
+                                iconId = string.match(icon, "%d+")
+                                if iconId then return end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- 2. Tìm trong Directory toàn cục
+        local Directory = require(Library:WaitForChild("Directory"))
+        
+        -- Phân tích mã La Mã từ tên vật phẩm để đoán Level/Tier
+        local romanToNum = {I=1, II=2, III=3, IV=4, V=5, VI=6, VII=7, VIII=8, IX=9, X=10}
+        local parts = string.split(itemName, " ")
+        local lastPart = parts[#parts]
+        local baseId = itemName
+        local tierVal = nil
+        if romanToNum[lastPart] then
+            tierVal = romanToNum[lastPart]
+            table.remove(parts, #parts)
+            baseId = table.concat(parts, " ")
+        end
+        
+        for dirName, dirData in pairs(Directory) do
+            if type(dirData) == "table" then
+                for key, info in pairs(dirData) do
+                    if key == baseId or (type(info) == "table" and (info.Name == baseId or info.id == baseId or info.Name == itemName or info.id == itemName)) then
+                        local catGuess = dirName
+                        if catGuess:sub(-1) == "s" then catGuess = catGuess:sub(1, -2) end
+                        
+                        local success, itemObj = pcall(function() 
+                            return Types.From(catGuess, { id = key, _tier = tierVal, tn = tierVal, tier = tierVal }) 
+                        end)
+                        if success and itemObj then
+                            local icon = itemObj:GetIcon()
+                            if icon then
+                                iconId = string.match(icon, "%d+")
+                                if iconId then return end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    
+    if iconId then
+        return "https://www.roblox.com/asset-thumbnail/image?assetId=" .. iconId .. "&width=150&height=150&format=png"
+    end
+    return ""
+end
+
+-- Dọn dẹp UI cũ nếu có
+local oldScreen = PlayerGui:FindFirstChild("PlazaSellCustomGui")
+if oldScreen then oldScreen:Destroy() end
+
+-- 4. KHỞI TẠO GIAO DIỆN CHÍNH
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PlazaSellCustomGui"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 999999 -- Luôn luôn hiển thị trên cùng (Always on Top)
+screenGui.Parent = PlayerGui
+
+-- Khung cửa sổ chính (AMOLED Đen tuyền)
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.fromOffset(680, 480)
+MainFrame.Position = UDim2.new(0.5, -340, 0.5, -240)
+MainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0) -- AMOLED Đen 100%
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = false -- Sẽ dùng custom dragging
+MainFrame.Parent = screenGui
+
+local frameCorner = Instance.new("UICorner")
+frameCorner.CornerRadius = UDim.new(0, 8)
+frameCorner.Parent = MainFrame
+
+local frameStroke = Instance.new("UIStroke")
+frameStroke.Color = Color3.fromRGB(30, 30, 30)
+frameStroke.Thickness = 1.5
+frameStroke.Parent = MainFrame
+
+-- Tự động co giãn giao diện tương thích với màn hình Mobile / Điện thoại / Tablet / PC
+local uiScale = Instance.new("UIScale")
+uiScale.Name = "AutoResponsiveScale"
+uiScale.Parent = MainFrame
+
+local function updateResponsiveScale()
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+    if not viewport then return end
+    local baseW, baseH = 700, 500
+    if viewport.X < baseW or viewport.Y < baseH then
+        local scaleX = viewport.X / baseW
+        local scaleY = viewport.Y / baseH
+        uiScale.Scale = math.clamp(math.min(scaleX, scaleY) * 0.92, 0.45, 1)
+    else
+        uiScale.Scale = 1
+    end
+end
+
+updateResponsiveScale()
+if workspace.CurrentCamera then
+    workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsiveScale)
+end
+
+-- Thanh tiêu đề kéo thả
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.Size = UDim2.new(1, 0, 0, 30)
+TopBar.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+TopBar.BorderSizePixel = 0
+TopBar.Parent = MainFrame
+
+local barCorner = Instance.new("UICorner")
+barCorner.CornerRadius = UDim.new(0, 8)
+barCorner.Parent = TopBar
+
+-- Che góc tròn bên dưới của TopBar
+local barChe = Instance.new("Frame")
+barChe.Size = UDim2.new(1, 0, 0, 10)
+barChe.Position = UDim2.new(0, 0, 1, -10)
+barChe.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+barChe.BorderSizePixel = 0
+barChe.Parent = TopBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(0.6, 0, 1, 0)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "Auto Sell Plaza"
+Title.TextColor3 = Color3.fromRGB(240, 240, 240)
+Title.TextSize = 12
+Title.Font = Enum.Font.SourceSansBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TopBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 1, 0)
+CloseBtn.Position = UDim2.new(1, -30, 0, 0)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(150, 150, 150)
+CloseBtn.TextSize = 13
+CloseBtn.Font = Enum.Font.SourceSansBold
+CloseBtn.Parent = TopBar
+
+CloseBtn.MouseEnter:Connect(function() CloseBtn.TextColor3 = Color3.fromRGB(255, 50, 50) end)
+CloseBtn.MouseLeave:Connect(function() CloseBtn.TextColor3 = Color3.fromRGB(150, 150, 150) end)
+CloseBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+end)
+
+-- Chia bố cục (Trái: Menu, Phải: Nội dung)
+local SideBar = Instance.new("Frame")
+SideBar.Name = "SideBar"
+SideBar.Size = UDim2.new(0, 140, 1, -30)
+SideBar.Position = UDim2.new(0, 0, 0, 30)
+SideBar.BackgroundColor3 = Color3.fromRGB(2, 2, 2)
+SideBar.BorderSizePixel = 0
+SideBar.Parent = MainFrame
+
+local sideChe = Instance.new("Frame")
+sideChe.Size = UDim2.new(0, 10, 1, 0)
+sideChe.Position = UDim2.new(1, -10, 0, 0)
+sideChe.BackgroundColor3 = Color3.fromRGB(2, 2, 2)
+sideChe.BorderSizePixel = 0
+sideChe.Parent = SideBar
+
+local ContentFrame = Instance.new("Frame")
+ContentFrame.Name = "ContentFrame"
+ContentFrame.Size = UDim2.new(1, -150, 1, -40)
+ContentFrame.Position = UDim2.new(0, 145, 0, 35)
+ContentFrame.BackgroundTransparency = 1
+ContentFrame.BorderSizePixel = 0
+ContentFrame.Parent = MainFrame
+
+-- 5. KÉO THẢ GIAO DIỆN (CUSTOM DRAG SCRIPT)
+local UserInputService = game:GetService("UserInputService")
+local dragging, dragInput, dragStart, startPos
+
+local function updateDrag(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+TopBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+TopBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        updateDrag(input)
+    end
+end)
+-- 5.1. CO GIÃN KÍCH THƯỚC GIAO DIỆN (WINDOW RESIZING SCRIPT)
+local ResizeHandle = Instance.new("TextButton")
+ResizeHandle.Name = "ResizeHandle"
+ResizeHandle.Size = UDim2.fromOffset(12, 12)
+ResizeHandle.Position = UDim2.new(1, -12, 1, -12)
+ResizeHandle.BackgroundTransparency = 1
+ResizeHandle.Text = "◢"
+ResizeHandle.TextColor3 = Color3.fromRGB(80, 80, 80)
+ResizeHandle.TextSize = 14
+ResizeHandle.Font = Enum.Font.SourceSans
+ResizeHandle.ZIndex = 10
+ResizeHandle.Parent = MainFrame
+
+local resizing = false
+local resizeStartPos
+local resizeStartSize
+
+ResizeHandle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        resizing = true
+        resizeStartPos = input.Position
+        resizeStartSize = MainFrame.AbsoluteSize
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                resizing = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if resizing and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - resizeStartPos
+        -- Giới hạn kích thước tối thiểu là 580x420 và tối đa là 1200x900 để tránh vỡ bố cục
+        local newWidth = math.clamp(resizeStartSize.X + delta.X, 580, 1200)
+        local newHeight = math.clamp(resizeStartSize.Y + delta.Y, 420, 900)
+        MainFrame.Size = UDim2.fromOffset(newWidth, newHeight)
+    end
+end)
+
+-- 6. HỆ THỐNG THÀNH PHẦN GIAO DIỆN TÙY BIẾN (CUSTOM WIDGETS)
+local pages = {}
+local menuButtons = {}
+
+local function createPage(name)
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name .. "Page"
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 4
+    page.ScrollBarImageColor3 = Color3.fromRGB(50, 50, 50)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.Visible = false
+    page.Parent = ContentFrame
+    
+    local list = Instance.new("UIListLayout")
+    list.Padding = UDim.new(0, 12)
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Parent = page
+    
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 5)
+    padding.PaddingRight = UDim.new(0, 10)
+    padding.PaddingTop = UDim.new(0, 5)
+    padding.PaddingBottom = UDim.new(0, 40) -- Padding bottom tránh cắt mất phần tử cuối
+    padding.Parent = page
+    
+    pages[name] = page
+    return page
+end
+
+local menuButtonCount = 0
+
+local function selectPage(name)
+    for pName, page in pairs(pages) do
+        page.Visible = (pName == name)
+    end
+    for btnName, btn in pairs(menuButtons) do
+        local highlight = btn:FindFirstChild("HighlightBar")
+        if btnName == name then
+            btn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+            btn.TextColor3 = Color3.fromRGB(0, 170, 127) -- Xanh lục active
+            if highlight then
+                highlight.Visible = true
+            end
+        else
+            btn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            btn.TextColor3 = Color3.fromRGB(150, 150, 150)
+            if highlight then
+                highlight.Visible = false
+            end
+        end
+    end
+end
+
+local function addMenuButton(name, label)
+    local btn = Instance.new("TextButton")
+    btn.Name = name .. "MenuBtn"
+    btn.Size = UDim2.new(1, -10, 0, 38)
+    btn.Position = UDim2.new(0, 5, 0, menuButtonCount * 44 + 10)
+    btn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    btn.Text = label
+    btn.TextColor3 = Color3.fromRGB(150, 150, 150)
+    btn.TextSize = 13
+    btn.Font = Enum.Font.SourceSansBold
+    btn.Parent = SideBar
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = btn
+    
+    local highlight = Instance.new("Frame")
+    highlight.Name = "HighlightBar"
+    highlight.Size = UDim2.new(0, 3, 1, 0)
+    highlight.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+    highlight.BorderSizePixel = 0
+    highlight.Visible = false
+    highlight.Parent = btn
+    
+    local hlCorner = Instance.new("UICorner")
+    hlCorner.CornerRadius = UDim.new(0, 4)
+    hlCorner.Parent = highlight
+    
+    menuButtons[name] = btn
+    menuButtonCount = menuButtonCount + 1
+    
+    btn.MouseButton1Click:Connect(function()
+        selectPage(name)
+    end)
+end
+
+-- Helper tạo Thông báo Pop-up đẹp (debounced to prevent spam stacking)
+local _notifBusy = false
+local function showNotification(title, content)
+    if _notifBusy then return end
+    _notifBusy = true
+    -- Xóa popup cũ nếu còn sót lại
+    for _, child in ipairs(screenGui:GetChildren()) do
+        if child.Name == "__NotifPop" then child:Destroy() end
+    end
+    local pop = Instance.new("Frame")
+    pop.Name = "__NotifPop"
+    pop.Size = UDim2.fromOffset(220, 55)
+    pop.Position = UDim2.new(1, -230, 1, -65)
+    pop.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+    pop.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = pop
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(0, 170, 127)
+    stroke.Thickness = 1.5
+    stroke.Parent = pop
+    
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(1, -16, 0, 20)
+    tLbl.Position = UDim2.new(0, 8, 0, 4)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = title
+    tLbl.TextColor3 = Color3.fromRGB(0, 170, 127)
+    tLbl.TextSize = 11
+    tLbl.Font = Enum.Font.SourceSansBold
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+    tLbl.Parent = pop
+    
+    local cLbl = Instance.new("TextLabel")
+    cLbl.Size = UDim2.new(1, -16, 0, 25)
+    cLbl.Position = UDim2.new(0, 8, 0, 24)
+    cLbl.BackgroundTransparency = 1
+    cLbl.Text = content
+    cLbl.TextColor3 = Color3.fromRGB(180, 180, 180)
+    cLbl.TextSize = 10
+    cLbl.Font = Enum.Font.SourceSans
+    cLbl.TextXAlignment = Enum.TextXAlignment.Left
+    cLbl.Parent = pop
+    
+    task.spawn(function()
+        task.wait(3.5)
+        local tween = game:GetService("TweenService"):Create(pop, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = 1})
+        tween:Play()
+        tLbl.TextTransparency = 1
+        cLbl.TextTransparency = 1
+        stroke.Transparency = 1
+        task.wait(0.5)
+        pop:Destroy()
+        _notifBusy = false
+    end)
+end
+
+-- Helper tạo Toggle (Nút bật/tắt)
+local function createToggle(parent, title, description, configKey, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 48)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(0.7, 0, 0.5, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = title
+    textLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    textLabel.TextSize = 13.5
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.Parent = frame
+    
+    local descLabel = Instance.new("TextLabel")
+    descLabel.Size = UDim2.new(0.7, 0, 0.5, 0)
+    descLabel.Position = UDim2.new(0, 0, 0.5, 0)
+    descLabel.BackgroundTransparency = 1
+    descLabel.Text = description
+    descLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+    descLabel.TextSize = 11
+    descLabel.Font = Enum.Font.SourceSans
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.Parent = frame
+    
+    local switchTrack = Instance.new("TextButton")
+    switchTrack.Size = UDim2.new(0, 44, 0, 22)
+    switchTrack.Position = UDim2.new(1, -48, 0.5, -11)
+    switchTrack.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    switchTrack.Text = ""
+    switchTrack.Parent = frame
+    
+    local trackCorner = Instance.new("UICorner")
+    trackCorner.CornerRadius = UDim.new(0.5, 0)
+    trackCorner.Parent = switchTrack
+    
+    local switchThumb = Instance.new("Frame")
+    switchThumb.Size = UDim2.new(0, 18, 0, 18)
+    switchThumb.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+    switchThumb.BorderSizePixel = 0
+    switchThumb.Parent = switchTrack
+    
+    local thumbCorner = Instance.new("UICorner")
+    thumbCorner.CornerRadius = UDim.new(0.5, 0)
+    thumbCorner.Parent = switchThumb
+    
+    local function updateVisual(state)
+        if state then
+            switchTrack.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+            switchThumb.Position = UDim2.new(1, -20, 0.5, -9)
+            switchThumb.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            switchTrack.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+            switchThumb.Position = UDim2.new(0, 2, 0.5, -9)
+            switchThumb.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+        end
+    end
+    
+    updateVisual(getgenv().PlazaSellConfig[configKey])
+    
+    switchTrack.MouseButton1Click:Connect(function()
+        local newState = not getgenv().PlazaSellConfig[configKey]
+        getgenv().PlazaSellConfig[configKey] = newState
+        updateVisual(newState)
+        saveConfig()
+        if callback then callback(newState) end
+    end)
+end
+
+-- Helper tạo Input Box (Ô nhập - Bố cục dọc chuyên nghiệp chống đè chữ)
+local function createInput(parent, title, description, placeholder, configKey, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 68) -- Tăng chiều cao lên 68 cho bố cục dọc
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 0, 18)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = title
+    textLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    textLabel.TextSize = 13.5
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.Parent = frame
+    
+    local descLabel = Instance.new("TextLabel")
+    descLabel.Size = UDim2.new(1, 0, 0, 14)
+    descLabel.Position = UDim2.new(0, 0, 0, 18)
+    descLabel.BackgroundTransparency = 1
+    descLabel.Text = description
+    descLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+    descLabel.TextSize = 11
+    descLabel.Font = Enum.Font.SourceSans
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.Parent = frame
+    
+    local textBox = Instance.new("TextBox")
+    textBox.Size = UDim2.new(1, -10, 0, 30) -- Chiều ngang đầy đủ (trừ lề 10px)
+    textBox.Position = UDim2.new(0, 5, 0, 34) -- Đặt ở dưới nhãn
+    textBox.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+    textBox.PlaceholderText = placeholder
+    textBox.PlaceholderColor3 = Color3.fromRGB(80, 80, 80)
+    textBox.ClipsDescendants = true -- Cắt phần chữ tràn ra ngoài!
+    
+    if configKey == "MinPrice" then
+        textBox.Text = formatNumber(getgenv().PlazaSellConfig.MinPrice)
+    else
+        textBox.Text = tostring(getgenv().PlazaSellConfig[configKey])
+    end
+    
+    textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textBox.TextSize = 13
+    textBox.Font = Enum.Font.SourceSans
+    textBox.ClearTextOnFocus = false
+    textBox.Parent = frame
+    
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0, 4)
+    boxCorner.Parent = textBox
+    
+    local boxStroke = Instance.new("UIStroke")
+    boxStroke.Color = Color3.fromRGB(40, 40, 40)
+    boxStroke.Thickness = 1
+    boxStroke.Parent = textBox
+    
+    textBox.FocusLost:Connect(function()
+        local txt = textBox.Text
+        if configKey == "MinPrice" then
+            local parsed = parseNumber(txt)
+            if parsed then
+                getgenv().PlazaSellConfig.MinPrice = parsed
+                textBox.Text = formatNumber(parsed)
+                saveConfig()
+                if callback then callback(parsed) end
+            else
+                textBox.Text = formatNumber(getgenv().PlazaSellConfig.MinPrice)
+            end
+        elseif configKey == "MaxSlots" then
+            local num = tonumber(txt)
+            if num and num >= 1 and num <= 150 then
+                getgenv().PlazaSellConfig.MaxSlots = math.floor(num)
+                saveConfig()
+                if callback then callback(math.floor(num)) end
+            else
+                textBox.Text = tostring(getgenv().PlazaSellConfig.MaxSlots)
+            end
+        else
+            getgenv().PlazaSellConfig[configKey] = txt
+            saveConfig()
+            if callback then callback(txt) end
+        end
+    end)
+end
+
+-- Helper tạo Dropdown (Trình chọn)
+local function createDropdown(parent, title, description, options, configKey, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 54)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(0.5, 0, 0, 24)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = title
+    textLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    textLabel.TextSize = 13.5
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.Parent = frame
+    
+    local descLabel = Instance.new("TextLabel")
+    descLabel.Size = UDim2.new(0.5, 0, 0, 20)
+    descLabel.Position = UDim2.new(0, 0, 0, 22)
+    descLabel.BackgroundTransparency = 1
+    descLabel.Text = description
+    descLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+    descLabel.TextSize = 11
+    descLabel.Font = Enum.Font.SourceSans
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.Parent = frame
+    
+    local dropdownBtn = Instance.new("TextButton")
+    dropdownBtn.Size = UDim2.new(0.45, 0, 0, 30)
+    dropdownBtn.Position = UDim2.new(0.55, 0, 0, 10)
+    dropdownBtn.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+    dropdownBtn.Text = tostring(getgenv().PlazaSellConfig[configKey])
+    dropdownBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    dropdownBtn.TextSize = 13
+    dropdownBtn.Font = Enum.Font.SourceSansBold
+    dropdownBtn.Parent = frame
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 4)
+    btnCorner.Parent = dropdownBtn
+    
+    local btnStroke = Instance.new("UIStroke")
+    btnStroke.Color = Color3.fromRGB(40, 40, 40)
+    btnStroke.Thickness = 1
+    btnStroke.Parent = dropdownBtn
+    
+    local menuFrame = Instance.new("Frame")
+    menuFrame.Size = UDim2.new(0.45, 0, 0, #options * 24)
+    menuFrame.Position = UDim2.new(0.55, 0, 0, 34)
+    menuFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+    menuFrame.BorderSizePixel = 0
+    menuFrame.Visible = false
+    menuFrame.ZIndex = 100
+    menuFrame.Parent = frame
+    
+    local menuCorner = Instance.new("UICorner")
+    menuCorner.CornerRadius = UDim.new(0, 4)
+    menuCorner.Parent = menuFrame
+    
+    local menuStroke = Instance.new("UIStroke")
+    menuStroke.Color = Color3.fromRGB(50, 50, 50)
+    menuStroke.Thickness = 1
+    menuStroke.Parent = menuFrame
+    
+    for idx, opt in ipairs(options) do
+        local optBtn = Instance.new("TextButton")
+        optBtn.Size = UDim2.new(1, 0, 0, 24)
+        optBtn.Position = UDim2.new(0, 0, 0, (idx - 1) * 24)
+        optBtn.BackgroundTransparency = 1
+        optBtn.Text = opt
+        optBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+        optBtn.TextSize = 12
+        optBtn.Font = Enum.Font.SourceSans
+        optBtn.ZIndex = 101
+        optBtn.Parent = menuFrame
+        
+        optBtn.MouseEnter:Connect(function()
+            optBtn.BackgroundTransparency = 0.95
+            optBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        end)
+        optBtn.MouseLeave:Connect(function()
+            optBtn.BackgroundTransparency = 1
+        end)
+        
+        optBtn.MouseButton1Click:Connect(function()
+            dropdownBtn.Text = opt
+            getgenv().PlazaSellConfig[configKey] = opt
+            saveConfig()
+            menuFrame.Visible = false
+            if callback then callback(opt) end
+        end)
+    end
+    
+    dropdownBtn.MouseButton1Click:Connect(function()
+        menuFrame.Visible = not menuFrame.Visible
+    end)
+    
+    UserInputService.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if menuFrame.Visible then
+                task.wait(0.1)
+                menuFrame.Visible = false
+            end
+        end
+    end)
+end
+
+-- Helper tạo Slider phần trăm
+local function createSlider(parent, title, description, minVal, maxVal, configKey, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 56)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(0.5, 0, 0, 24)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = title
+    textLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    textLabel.TextSize = 13.5
+    textLabel.Font = Enum.Font.SourceSansBold
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.Parent = frame
+    
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.Size = UDim2.new(0.5, 0, 0, 24)
+    valueLabel.Position = UDim2.new(0.5, 0, 0, 0)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.TextColor3 = Color3.fromRGB(0, 170, 127)
+    valueLabel.TextSize = 13.5
+    valueLabel.Font = Enum.Font.SourceSansBold
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    valueLabel.Parent = frame
+    
+    local descLabel = Instance.new("TextLabel")
+    descLabel.Size = UDim2.new(1, 0, 0, 20)
+    descLabel.Position = UDim2.new(0, 0, 0, 20)
+    descLabel.BackgroundTransparency = 1
+    descLabel.Text = description
+    descLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+    descLabel.TextSize = 11
+    descLabel.Font = Enum.Font.SourceSans
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.Parent = frame
+    
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, 0, 0, 6)
+    track.Position = UDim2.new(0, 0, 0, 44)
+    track.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    track.BorderSizePixel = 0
+    track.Parent = frame
+    
+    local trackCorner = Instance.new("UICorner")
+    trackCorner.CornerRadius = UDim.new(0.5, 0)
+    trackCorner.Parent = track
+    
+    local handle = Instance.new("TextButton")
+    handle.Size = UDim2.new(0, 16, 0, 16)
+    handle.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+    handle.Text = ""
+    handle.BorderSizePixel = 0
+    handle.Parent = track
+    
+    local handleCorner = Instance.new("UICorner")
+    handleCorner.CornerRadius = UDim.new(0.5, 0)
+    handleCorner.Parent = handle
+    
+    local isPercent = (configKey == "RapMultiplier")
+    local initialVal = getgenv().PlazaSellConfig[configKey]
+    if isPercent then
+        initialVal = math.floor(initialVal * 100)
+    end
+    
+    local initialScale = math.clamp((initialVal - minVal) / (maxVal - minVal), 0, 1)
+    handle.Position = UDim2.new(initialScale, -8, 0.5, -8)
+    valueLabel.Text = isPercent and (tostring(initialVal) .. "%") or tostring(initialVal)
+    
+    local sliderActive = false
+    local function drag(input)
+        local relativeX = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        handle.Position = UDim2.new(relativeX, -8, 0.5, -8)
+        
+        local val = math.floor(minVal + relativeX * (maxVal - minVal))
+        valueLabel.Text = isPercent and (tostring(val) .. "%") or tostring(val)
+        
+        local saveVal = val
+        if isPercent then
+            saveVal = val / 100
+        end
+        getgenv().PlazaSellConfig[configKey] = saveVal
+        saveConfig()
+        if callback then callback(saveVal) end
+    end
+    
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            sliderActive = true
+        end
+    end)
+    
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            sliderActive = true
+            drag(input)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            sliderActive = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if sliderActive and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            drag(input)
+        end
+    end)
+end
+
+-- Helper tạo Nút Bấm hành động (Button)
+local function createButton(parent, text, color, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 36)
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 13
+    btn.Font = Enum.Font.SourceSansBold
+    btn.Parent = parent
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = btn
+    
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+
+-- --------------------------------------------------------------------------
+-- TRANG 1: HOME PAGE (AUTO SELL & TELEPORT)
+-- --------------------------------------------------------------------------
+local pageHome = createPage("Home")
+addMenuButton("Home", "🏠 Auto Sell")
+
+createToggle(pageHome, "Kích hoạt Auto Sell", "Tự động tìm kiếm quầy hàng trống và restock vật phẩm", "Enabled", function(state)
+    print("[AUTO SELL] Status:", state and "ENABLED" or "DISABLED")
+end)
+
+createDropdown(pageHome, "Chế độ Plaza", "Lựa chọn loại máy chủ dịch chuyển", { "Auto Select", "Normal Plaza", "Pro Plaza" }, "PlazaType", function(val)
+    print("[PLAZA WORLD] Configured mode:", val)
+end)
+
+createToggle(pageHome, "Tự dịch chuyển đến Plaza", "Tự động bay màu sang Plaza nếu phát hiện ở thế giới chính", "AutoTeleport", function(state)
+    print("[TELEPORT] Auto teleport:", state and "ENABLED" or "DISABLED")
+end)
+
+
+-- --------------------------------------------------------------------------
+-- TRANG 2: INVENTORY GRID PRICING (GRID LỰA CHỌN VÀ ĐẶT GIÁ CỐ ĐỊNH)
+-- --------------------------------------------------------------------------
+local pagePricing = createPage("Pricing")
+addMenuButton("Pricing", "🛒 Giá Kho Đồ")
+
+-- Thiết kế layout cột đôi đặc biệt cho trang Giá Kho Đồ
+pagePricing.ScrollingEnabled = false -- tắt cuộn chính
+pagePricing.CanvasSize = UDim2.new(0,0,0,0)
+
+local GridMainLayout = Instance.new("Frame")
+GridMainLayout.Size = UDim2.new(1, 0, 1, 0)
+GridMainLayout.BackgroundTransparency = 1
+GridMainLayout.Parent = pagePricing
+
+-- Cột trái (Grid vật phẩm)
+local GLeftFrame = Instance.new("Frame")
+GLeftFrame.Size = UDim2.new(0.50, 0, 1, 0)
+GLeftFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+GLeftFrame.BorderSizePixel = 0
+GLeftFrame.Parent = GridMainLayout
+
+local glCorner = Instance.new("UICorner")
+glCorner.CornerRadius = UDim.new(0, 6)
+glCorner.Parent = GLeftFrame
+
+-- Category Header nằm ngang trên cột trái (Scrolling Frame cuộn ngang cho 7 tabs)
+local GCatHeader = Instance.new("ScrollingFrame")
+GCatHeader.Size = UDim2.new(1, 0, 0, 28)
+GCatHeader.Position = UDim2.new(0, 0, 0, 5)
+GCatHeader.BackgroundTransparency = 1
+GCatHeader.BorderSizePixel = 0
+GCatHeader.ScrollBarThickness = 0 -- Ẩn thanh cuộn cho mượt và đẹp mắt
+GCatHeader.ScrollingDirection = Enum.ScrollingDirection.X
+GCatHeader.AutomaticCanvasSize = Enum.AutomaticSize.X
+GCatHeader.CanvasSize = UDim2.new(0, 0, 0, 0)
+GCatHeader.Parent = GLeftFrame
+
+local GCatLayout = Instance.new("UIListLayout")
+GCatLayout.FillDirection = Enum.FillDirection.Horizontal
+GCatLayout.SortOrder = Enum.SortOrder.LayoutOrder
+GCatLayout.Padding = UDim.new(0, 6)
+GCatLayout.Parent = GCatHeader
+
+-- Khung Grid Cuộn vật phẩm
+local GItemScroll = Instance.new("ScrollingFrame")
+GItemScroll.Size = UDim2.new(1, -10, 1, -44)
+GItemScroll.Position = UDim2.new(0, 5, 0, 36)
+GItemScroll.BackgroundTransparency = 1
+GItemScroll.BorderSizePixel = 0
+GItemScroll.ScrollBarThickness = 4
+GItemScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+GItemScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+GItemScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+GItemScroll.Parent = GLeftFrame
+
+local UIGrid = Instance.new("UIGridLayout")
+UIGrid.CellSize = UDim2.fromOffset(56, 56)
+UIGrid.CellPadding = UDim2.fromOffset(6, 6)
+UIGrid.SortOrder = Enum.SortOrder.LayoutOrder
+UIGrid.Parent = GItemScroll
+
+-- Cột phải (Cấu hình)
+local GRightFrame = Instance.new("Frame")
+GRightFrame.Size = UDim2.new(0.47, 0, 1, 0)
+GRightFrame.Position = UDim2.new(0.53, 0, 0, 0)
+GRightFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+GRightFrame.BorderSizePixel = 0
+GRightFrame.Parent = GridMainLayout
+
+local grCorner = Instance.new("UICorner")
+grCorner.CornerRadius = UDim.new(0, 6)
+grCorner.Parent = GRightFrame
+
+local GRightContainer = Instance.new("Frame")
+GRightContainer.Size = UDim2.new(1, -16, 1, -16)
+GRightContainer.Position = UDim2.fromOffset(8, 8)
+GRightContainer.BackgroundTransparency = 1
+GRightContainer.Parent = GRightFrame
+
+-- Các Widget cột phải
+-- Các Widget cột phải (Đã upscale kích thước & điều chỉnh vị trí)
+local GSelIcon = Instance.new("ImageLabel")
+GSelIcon.Size = UDim2.fromOffset(80, 80)
+GSelIcon.Position = UDim2.new(0.5, -40, 0, 10)
+GSelIcon.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+GSelIcon.Image = ""
+GSelIcon.Parent = GRightContainer
+
+local gsiCorner = Instance.new("UICorner")
+gsiCorner.CornerRadius = UDim.new(0, 6)
+gsiCorner.Parent = GSelIcon
+
+local GSelName = Instance.new("TextLabel")
+GSelName.Size = UDim2.new(1, 0, 0, 26)
+GSelName.Position = UDim2.new(0, 0, 0, 95)
+GSelName.BackgroundTransparency = 1
+GSelName.Text = "Chọn vật phẩm..."
+GSelName.TextColor3 = Color3.fromRGB(255, 255, 255) -- Trắng tinh tế nổi bật
+GSelName.TextSize = 15.5 -- To rõ ràng hơn
+GSelName.Font = Enum.Font.SourceSansBold
+GSelName.TextTruncate = Enum.TextTruncate.AtEnd
+GSelName.Parent = GRightContainer
+
+local GSelRap = Instance.new("TextLabel")
+GSelRap.Size = UDim2.new(1, 0, 0, 22)
+GSelRap.Position = UDim2.new(0, 0, 0, 121)
+GSelRap.BackgroundTransparency = 1
+GSelRap.Text = "RAP: N/A"
+GSelRap.TextColor3 = Color3.fromRGB(250, 190, 50) -- Màu Vàng Gold giá trị
+GSelRap.TextSize = 14.5 -- Phóng to chữ RAP để trông lực hơn
+GSelRap.Font = Enum.Font.SourceSansBold -- Chữ in đậm nổi bật
+GSelRap.Parent = GRightContainer
+
+-- Thêm viền phát sáng (UIStroke) cho Icon vật phẩm được chọn để có hồn hơn
+local gsiStroke = Instance.new("UIStroke")
+gsiStroke.Color = Color3.fromRGB(0, 170, 127) -- Phát sáng màu xanh ngọc
+gsiStroke.Thickness = 1.5
+gsiStroke.Parent = GSelIcon
+
+-- Box nhập giá (Nâng chiều cao và điều chỉnh vị trí Y)
+local GInputWrapper = Instance.new("Frame")
+GInputWrapper.Size = UDim2.new(1, 0, 0, 32)
+GInputWrapper.Position = UDim2.new(0, 0, 0, 150)
+GInputWrapper.BackgroundTransparency = 1
+GInputWrapper.Parent = GRightContainer
+
+local GPriceLabel = Instance.new("TextLabel")
+GPriceLabel.Size = UDim2.new(0.28, 0, 1, 0)
+GPriceLabel.BackgroundTransparency = 1
+GPriceLabel.Text = "Giá bán:"
+GPriceLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+GPriceLabel.TextSize = 12.5
+GPriceLabel.Font = Enum.Font.SourceSansBold
+GPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
+GPriceLabel.Parent = GInputWrapper
+
+local GPriceBox = Instance.new("TextBox")
+GPriceBox.Size = UDim2.new(0.72, 0, 1, 0)
+GPriceBox.Position = UDim2.new(0.28, 0, 0, 0)
+GPriceBox.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+GPriceBox.PlaceholderText = "Ví dụ: 10m, 100k"
+GPriceBox.PlaceholderColor3 = Color3.fromRGB(70, 70, 70)
+GPriceBox.Text = ""
+GPriceBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+GPriceBox.TextSize = 12.5
+GPriceBox.Font = Enum.Font.SourceSans
+GPriceBox.ClearTextOnFocus = false
+GPriceBox.Parent = GInputWrapper
+
+local gpbCorner = Instance.new("UICorner")
+gpbCorner.CornerRadius = UDim.new(0, 4)
+gpbCorner.Parent = GPriceBox
+
+local gpbStroke = Instance.new("UIStroke")
+gpbStroke.Color = Color3.fromRGB(40, 40, 40)
+gpbStroke.Thickness = 1
+gpbStroke.Parent = GPriceBox
+
+-- Slider tỷ lệ RAP
+local GSliderWrapper = Instance.new("Frame")
+GSliderWrapper.Size = UDim2.new(1, 0, 0, 36)
+GSliderWrapper.Position = UDim2.new(0, 0, 0, 196)
+GSliderWrapper.BackgroundTransparency = 1
+GSliderWrapper.Parent = GRightContainer
+
+local GSliderTitle = Instance.new("TextLabel")
+GSliderTitle.Size = UDim2.new(0.5, 0, 0, 12)
+GSliderTitle.BackgroundTransparency = 1
+GSliderTitle.Text = "Tỷ lệ RAP:"
+GSliderTitle.TextColor3 = Color3.fromRGB(130, 130, 130)
+GSliderTitle.TextSize = 11.5
+GSliderTitle.Font = Enum.Font.SourceSans
+GSliderTitle.TextXAlignment = Enum.TextXAlignment.Left
+GSliderTitle.Parent = GSliderWrapper
+
+local GSliderValText = Instance.new("TextLabel")
+GSliderValText.Size = UDim2.new(0.5, 0, 0, 12)
+GSliderValText.Position = UDim2.new(0.5, 0, 0, 0)
+GSliderValText.BackgroundTransparency = 1
+GSliderValText.Text = "100% RAP"
+GSliderValText.TextColor3 = Color3.fromRGB(0, 170, 127)
+GSliderValText.TextSize = 11.5
+GSliderValText.Font = Enum.Font.SourceSansBold
+GSliderValText.TextXAlignment = Enum.TextXAlignment.Right
+GSliderValText.Parent = GSliderWrapper
+
+local GSliderTrack = Instance.new("Frame")
+GSliderTrack.Size = UDim2.new(1, 0, 0, 4)
+GSliderTrack.Position = UDim2.new(0, 0, 0, 22)
+GSliderTrack.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+GSliderTrack.BorderSizePixel = 0
+GSliderTrack.Parent = GSliderWrapper
+
+local gstCorner = Instance.new("UICorner")
+gstCorner.CornerRadius = UDim.new(0.5, 0)
+gstCorner.Parent = GSliderTrack
+
+local GSliderHandle = Instance.new("TextButton")
+GSliderHandle.Size = UDim2.fromOffset(12, 12)
+GSliderHandle.Position = UDim2.new(0.333, -8, 0.5, -8)
+GSliderHandle.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+GSliderHandle.Text = ""
+GSliderHandle.BorderSizePixel = 0
+GSliderHandle.Parent = GSliderTrack
+
+local gshCorner = Instance.new("UICorner")
+gshCorner.CornerRadius = UDim.new(0.5, 0)
+gshCorner.Parent = GSliderHandle
+
+-- Box nhập số lượng muốn bán (Nâng chiều cao từ 24 lên 32)
+local GAmtInputWrapper = Instance.new("Frame")
+GAmtInputWrapper.Size = UDim2.new(1, 0, 0, 32)
+GAmtInputWrapper.Position = UDim2.new(0, 0, 0, 244)
+GAmtInputWrapper.BackgroundTransparency = 1
+GAmtInputWrapper.Parent = GRightContainer
+
+local GAmtLabel = Instance.new("TextLabel")
+GAmtLabel.Size = UDim2.new(0.28, 0, 1, 0)
+GAmtLabel.BackgroundTransparency = 1
+GAmtLabel.Text = "Số lượng:"
+GAmtLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+GAmtLabel.TextSize = 12.5
+GAmtLabel.Font = Enum.Font.SourceSansBold
+GAmtLabel.TextXAlignment = Enum.TextXAlignment.Left
+GAmtLabel.Parent = GAmtInputWrapper
+
+local GAmtBox = Instance.new("TextBox")
+GAmtBox.Size = UDim2.new(0.52, 0, 1, 0)
+GAmtBox.Position = UDim2.new(0.28, 0, 0, 0)
+GAmtBox.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+GAmtBox.PlaceholderText = "All hoặc số"
+GAmtBox.PlaceholderColor3 = Color3.fromRGB(70, 70, 70)
+GAmtBox.Text = "All"
+GAmtBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+GAmtBox.TextSize = 12.5
+GAmtBox.Font = Enum.Font.SourceSans
+GAmtBox.ClearTextOnFocus = false
+GAmtBox.Parent = GAmtInputWrapper
+
+local gabCorner = Instance.new("UICorner")
+gabCorner.CornerRadius = UDim.new(0, 4)
+gabCorner.Parent = GAmtBox
+
+local gabStroke = Instance.new("UIStroke")
+gabStroke.Color = Color3.fromRGB(40, 40, 40)
+gabStroke.Thickness = 1
+gabStroke.Parent = GAmtBox
+
+local GAmtAllBtn = Instance.new("TextButton")
+GAmtAllBtn.Size = UDim2.new(0.18, 0, 1, 0)
+GAmtAllBtn.Position = UDim2.new(0.82, 0, 0, 0)
+GAmtAllBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+GAmtAllBtn.Text = "ALL"
+GAmtAllBtn.TextColor3 = Color3.fromRGB(0, 170, 127)
+GAmtAllBtn.TextSize = 11.5
+GAmtAllBtn.Font = Enum.Font.SourceSansBold
+GAmtAllBtn.Parent = GAmtInputWrapper
+
+local gaabCorner = Instance.new("UICorner")
+gaabCorner.CornerRadius = UDim.new(0, 4)
+gaabCorner.Parent = GAmtAllBtn
+
+local gaabStroke = Instance.new("UIStroke")
+gaabStroke.Color = Color3.fromRGB(40, 40, 40)
+gaabStroke.Thickness = 1
+gaabStroke.Parent = GAmtAllBtn
+
+GAmtAllBtn.MouseButton1Click:Connect(function()
+    GAmtBox.Text = "All"
+end)
+
+-- Box nhập số lần treo (Listing cycles/refills limit)
+local GLimitInputWrapper = Instance.new("Frame")
+GLimitInputWrapper.Size = UDim2.new(1, 0, 0, 32)
+GLimitInputWrapper.Position = UDim2.new(0, 0, 0, 286)
+GLimitInputWrapper.BackgroundTransparency = 1
+GLimitInputWrapper.Parent = GRightContainer
+
+local GLimitLabel = Instance.new("TextLabel")
+GLimitLabel.Size = UDim2.new(0.28, 0, 1, 0)
+GLimitLabel.BackgroundTransparency = 1
+GLimitLabel.Text = "Số lần treo:"
+GLimitLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+GLimitLabel.TextSize = 12.5
+GLimitLabel.Font = Enum.Font.SourceSansBold
+GLimitLabel.TextXAlignment = Enum.TextXAlignment.Left
+GLimitLabel.Parent = GLimitInputWrapper
+
+local GLimitBox = Instance.new("TextBox")
+GLimitBox.Size = UDim2.new(0.52, 0, 1, 0)
+GLimitBox.Position = UDim2.new(0.28, 0, 0, 0)
+GLimitBox.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+GLimitBox.PlaceholderText = "All hoặc số"
+GLimitBox.PlaceholderColor3 = Color3.fromRGB(70, 70, 70)
+GLimitBox.Text = "All"
+GLimitBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+GLimitBox.TextSize = 12.5
+GLimitBox.Font = Enum.Font.SourceSans
+GLimitBox.ClearTextOnFocus = false
+GLimitBox.Parent = GLimitInputWrapper
+
+local glbCorner = Instance.new("UICorner")
+glbCorner.CornerRadius = UDim.new(0, 4)
+glbCorner.Parent = GLimitBox
+
+local glbStroke = Instance.new("UIStroke")
+glbStroke.Color = Color3.fromRGB(40, 40, 40)
+glbStroke.Thickness = 1
+glbStroke.Parent = GLimitBox
+
+local GLimitAllBtn = Instance.new("TextButton")
+GLimitAllBtn.Size = UDim2.new(0.18, 0, 1, 0)
+GLimitAllBtn.Position = UDim2.new(0.82, 0, 0, 0)
+GLimitAllBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+GLimitAllBtn.Text = "ALL"
+GLimitAllBtn.TextColor3 = Color3.fromRGB(0, 170, 127)
+GLimitAllBtn.TextSize = 11.5
+GLimitAllBtn.Font = Enum.Font.SourceSansBold
+GLimitAllBtn.Parent = GLimitInputWrapper
+
+local glaCorner = Instance.new("UICorner")
+glaCorner.CornerRadius = UDim.new(0, 4)
+glaCorner.Parent = GLimitAllBtn
+
+local glaStroke = Instance.new("UIStroke")
+glaStroke.Color = Color3.fromRGB(40, 40, 40)
+glaStroke.Thickness = 1
+glaStroke.Parent = GLimitAllBtn
+
+GLimitAllBtn.MouseButton1Click:Connect(function()
+    GLimitBox.Text = "All"
+end)
+
+-- Các nút Lưu & Xóa dưới cột phải (GButtonWrapper nâng chiều cao lên 36)
+local GButtonWrapper = Instance.new("Frame")
+GButtonWrapper.Size = UDim2.new(1, 0, 0, 36)
+GButtonWrapper.Position = UDim2.new(0, 0, 1, -36)
+GButtonWrapper.BackgroundTransparency = 1
+GButtonWrapper.Parent = GRightContainer
+
+local GSaveBtn = createButton(GButtonWrapper, "Lưu Giá", Color3.fromRGB(0, 120, 80), function()
+    if not selectedItem then
+        showNotification("Lỗi", "Vui lòng chọn vật phẩm từ lưới kho đồ!")
+        return
+    end
+    local parsed = parseNumber(GPriceBox.Text)
+    if not parsed then
+        showNotification("Lỗi", "Giá nhập sai cú pháp (Ví dụ: 10m, 100k)")
+        return
+    end
+    
+    -- Xử lý số lượng muốn sell
+    local amtText = GAmtBox.Text:gsub("%s+", "")
+    local finalAmt = "All"
+    if amtText:lower() ~= "all" and amtText ~= "" then
+        local num = tonumber(amtText)
+        if num and num >= 1 then
+            finalAmt = math.floor(num)
+        else
+            showNotification("Lỗi", "Số lượng phải là số nguyên >= 1 hoặc 'All'!")
+            return
+        end
+    end
+    
+    -- Xử lý số lần treo
+    local limitText = GLimitBox.Text:gsub("%s+", "")
+    local finalLimit = "All"
+    if limitText:lower() ~= "all" and limitText ~= "" then
+        local num = tonumber(limitText)
+        if num and num >= 0 then
+            finalLimit = math.floor(num)
+        else
+            showNotification("Lỗi", "Số lần treo phải là số nguyên >= 0 hoặc 'All'!")
+            return
+        end
+    end
+    
+    getgenv().PlazaSellConfig.CustomPrices[selectedItem.name] = parsed
+    getgenv().PlazaSellConfig.CustomQuantities = getgenv().PlazaSellConfig.CustomQuantities or {}
+    getgenv().PlazaSellConfig.CustomQuantities[selectedItem.name] = finalAmt
+    getgenv().PlazaSellConfig.CustomListingsLimit = getgenv().PlazaSellConfig.CustomListingsLimit or {}
+    getgenv().PlazaSellConfig.CustomListingsLimit[selectedItem.name] = finalLimit
+    saveConfig()
+    
+    local displayAmt = (finalAmt == "All") and "tất cả" or (tostring(finalAmt) .. " cái")
+    local displayLimit = (finalLimit == "All") and "vô hạn" or (tostring(finalLimit) .. " lần")
+    showNotification("Đã lưu", string.format("Đã gán %s = %s (%s, %s treo)", selectedItem.name, formatNumber(parsed), displayAmt, displayLimit))
+end)
+GSaveBtn.Size = UDim2.new(0.48, 0, 1, 0)
+ 
+local GClearBtn = createButton(GButtonWrapper, "Xóa Giá", Color3.fromRGB(120, 30, 30), function()
+    if not selectedItem then
+        showNotification("Lỗi", "Vui lòng chọn vật phẩm!")
+        return
+    end
+    getgenv().PlazaSellConfig.CustomPrices[selectedItem.name] = nil
+    getgenv().PlazaSellConfig.CustomQuantities = getgenv().PlazaSellConfig.CustomQuantities or {}
+    getgenv().PlazaSellConfig.CustomQuantities[selectedItem.name] = nil
+    getgenv().PlazaSellConfig.CustomListingsLimit = getgenv().PlazaSellConfig.CustomListingsLimit or {}
+    getgenv().PlazaSellConfig.CustomListingsLimit[selectedItem.name] = nil
+    saveConfig()
+    GPriceBox.Text = ""
+    GAmtBox.Text = "All"
+    GLimitBox.Text = "All"
+    GSliderHandle.Position = UDim2.new(0.333, -6, 0.5, -6)
+    GSliderValText.Text = "100% RAP"
+    showNotification("Đã xóa", "Xóa cấu hình giá của " .. selectedItem.name)
+end)
+GClearBtn.Size = UDim2.new(0.48, 0, 1, 0)
+GClearBtn.Position = UDim2.new(0.52, 0, 0, 0)
+
+-- Logic quản lý Item Grid bên cột trái
+local gCatButtons = {}
+local gActiveCategory = "Pet"
+local gCategories = {
+    { id = "Pet", label = "Pets", width = 50 },
+    { id = "Huge", label = "Huge", width = 50 },
+    { id = "Titanic", label = "Titanic", width = 60 },
+    { id = "Gargantuan", label = "Gargantuan", width = 85 },
+    { id = "Enchant", label = "Enchants", width = 68 },
+    { id = "Potion", label = "Potions", width = 60 },
+    { id = "Egg", label = "Eggs", width = 50 },
+    { id = "Hoverboard", label = "Hoverboards", width = 80 },
+    { id = "Charm", label = "Charms", width = 60 },
+    { id = "Lootbox", label = "Lootboxes", width = 75 },
+    { id = "Ultimate", label = "Ultimates", width = 70 },
+    { id = "Misc", label = "Items", width = 50 },
+    { id = "Booth", label = "Booths", width = 55 }
+}
+
+local function renderInventoryGrid(catId)
+    gActiveCategory = catId
+    
+    -- Highlight nút danh mục tương ứng
+    for _, item in ipairs(gCatButtons) do
+        if item.id == catId then
+            item.btn.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+            item.btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            item.btn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+            item.btn.TextColor3 = Color3.fromRGB(150, 150, 150)
+        end
+    end
+    
+    -- Xóa lưới cũ
+    for _, child in ipairs(GItemScroll:GetChildren()) do
+        if child:IsA("ImageButton") or child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+    
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local Library = ReplicatedStorage:FindFirstChild("Library")
+    if not Library then return end
+    
+    local Save = require(Library:WaitForChild("Client"):WaitForChild("Save"))
+    local Types = require(Library:WaitForChild("Items"):WaitForChild("Types"))
+    local RAPCmds = require(Library:WaitForChild("Client"):WaitForChild("RAPCmds"))
+    
+    -- Xác định nguồn dữ liệu thô từ raw inventory
+    local rawCat = catId
+    if catId == "Huge" or catId == "Titanic" or catId == "Gargantuan" then
+        rawCat = "Pet"
+    end
+    
+    local invData = Save.Get()
+    if not invData or not invData.Inventory or not invData.Inventory[rawCat] then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Text = "Hòm đồ mục này đang trống."
+        empty.TextColor3 = Color3.fromRGB(100, 100, 100)
+        empty.TextSize = 11
+        empty.Font = Enum.Font.SourceSansItalic
+        empty.Parent = GItemScroll
+        return
+    end
+    
+    local list = {}
+    for uid, itemData in pairs(invData.Inventory[rawCat]) do
+        local success, itemObj = pcall(function()
+            return Types.From(rawCat, itemData)
+        end)
+        if success and itemObj then
+            local keep = false
+            
+            -- Phân loại bộ lọc pet nếu rawCat là "Pet"
+            if rawCat == "Pet" then
+                local isHuge = itemObj.IsHuge and itemObj:IsHuge()
+                local isTitanic = itemObj.IsTitanic and itemObj:IsTitanic()
+                
+                -- Check Gargantuan (thông qua hàm hoặc tên chứa "Gargantuan")
+                local isGargantuan = (itemObj.IsGargantuan and itemObj:IsGargantuan()) or 
+                                     (itemObj.Gargantuan and itemObj:Gargantuan()) or 
+                                     (itemObj:GetName() and tostring(itemObj:GetName()):find("Gargantuan"))
+                
+                if catId == "Pet" then
+                    -- Normal pet: không phải huge, titanic, hay gargantuan
+                    if not isHuge and not isTitanic and not isGargantuan then
+                        keep = true
+                    end
+                elseif catId == "Huge" then
+                    if isHuge then keep = true end
+                elseif catId == "Titanic" then
+                    if isTitanic then keep = true end
+                elseif catId == "Gargantuan" then
+                    if isGargantuan then keep = true end
+                end
+            else
+                -- Các mục Enchant, Potion, Egg...
+                keep = true
+            end
+            
+            if keep then
+                local iconId = itemObj:GetIcon()
+                if iconId then
+                    iconId = string.match(iconId, "%d+")
+                end
+                
+                local rapVal = 0
+                local getRapSuccess, rapResult = pcall(function()
+                    return RAPCmds.Get(itemObj)
+                end)
+                if getRapSuccess and rapResult then
+                    rapVal = rapResult
+                end
+                
+                table.insert(list, {
+                    uid = uid,
+                    name = itemObj:GetName(),
+                    amount = itemObj:GetAmount() or 1,
+                    icon = iconId and ("https://www.roblox.com/asset-thumbnail/image?assetId=" .. iconId .. "&width=150&height=150&format=png") or "",
+                    rap = rapVal,
+                    data = itemData
+                })
+            end
+        end
+    end
+    
+    table.sort(list, function(a, b) return a.rap > b.rap end)
+    
+    if #list == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Text = "Không có vật phẩm tương ứng."
+        empty.TextColor3 = Color3.fromRGB(100, 100, 100)
+        empty.TextSize = 11
+        empty.Font = Enum.Font.SourceSansItalic
+        empty.Parent = GItemScroll
+        return
+    end
+    
+    local activeBtnStroke = nil
+    for idx, item in ipairs(list) do
+        local btn = Instance.new("ImageButton")
+        btn.Size = UDim2.fromOffset(56, 56)
+        btn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+        btn.Image = item.icon
+        btn.Parent = GItemScroll
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = btn
+        
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(25, 25, 25)
+        stroke.Thickness = 1
+        stroke.Parent = btn
+        
+        if item.amount > 1 then
+            local amtText = Instance.new("TextLabel")
+            amtText.Size = UDim2.new(0.5, 0, 0.4, 0)
+            amtText.Position = UDim2.new(0.5, 0, 0.6, 0)
+            amtText.BackgroundTransparency = 1
+            amtText.Text = "x" .. item.amount
+            amtText.TextColor3 = Color3.fromRGB(255, 255, 255)
+            amtText.TextSize = 10
+            amtText.Font = Enum.Font.SourceSansBold
+            amtText.TextXAlignment = Enum.TextXAlignment.Right
+            amtText.TextYAlignment = Enum.TextYAlignment.Bottom
+            amtText.Parent = btn
+        end
+        
+        btn.MouseButton1Click:Connect(function()
+            if activeBtnStroke then
+                activeBtnStroke.Color = Color3.fromRGB(25, 25, 25)
+                activeBtnStroke.Thickness = 1
+            end
+            stroke.Color = Color3.fromRGB(0, 170, 127)
+            stroke.Thickness = 2
+            activeBtnStroke = stroke
+            
+            selectedItem = item
+            GSelIcon.Image = item.icon
+            GSelName.Text = item.name
+            local isEng = getgenv().PlazaSellConfig.Language == "English"
+            local slText = isEng and "Qty" or "SL"
+            GSelRap.Text = "RAP: " .. (item.rap > 0 and formatNumber(item.rap) or "N/A") .. " | " .. slText .. ": " .. formatNumber(item.amount)
+            
+            local existing = getgenv().PlazaSellConfig.CustomPrices[item.name]
+            local existingAmt = getgenv().PlazaSellConfig.CustomQuantities and getgenv().PlazaSellConfig.CustomQuantities[item.name]
+            
+            if existing then
+                GPriceBox.Text = formatNumber(existing)
+                if item.rap > 0 then
+                    local scale = math.clamp((existing / item.rap - 0.5) / 1.5, 0, 1)
+                    GSliderHandle.Position = UDim2.new(scale, -8, 0.5, -8)
+                    GSliderValText.Text = string.format("%d%% RAP", math.floor(50 + scale * 150))
+                end
+            else
+                GPriceBox.Text = item.rap > 0 and formatNumber(item.rap) or ""
+                GSliderHandle.Position = UDim2.new(0.333, -8, 0.5, -8)
+                GSliderValText.Text = "100% RAP"
+            end
+            
+            if existingAmt then
+                GAmtBox.Text = tostring(existingAmt)
+            else
+                GAmtBox.Text = "All"
+            end
+            
+            local existingLimit = getgenv().PlazaSellConfig.CustomListingsLimit and getgenv().PlazaSellConfig.CustomListingsLimit[item.name]
+            if existingLimit then
+                GLimitBox.Text = tostring(existingLimit)
+            else
+                GLimitBox.Text = "All"
+            end
+        end)
+    end
+    applyTranslations(GItemScroll)
+end
+
+-- Dựng các nút category trên lưới (Sử dụng ScrollingFrame cuộn ngang tự động co giãn)
+for idx, cat in ipairs(gCategories) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, cat.width, 1, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    btn.Text = cat.label
+    btn.TextColor3 = Color3.fromRGB(150, 150, 150)
+    btn.TextSize = 11
+    btn.Font = Enum.Font.SourceSansBold
+    btn.Parent = GCatHeader
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = btn
+    
+    table.insert(gCatButtons, { id = cat.id, btn = btn })
+    btn.MouseButton1Click:Connect(function()
+        renderInventoryGrid(cat.id)
+    end)
+end
+
+-- Kéo thả Slider tỷ lệ RAP
+local gSliderActive = false
+local function updateGSlider(input)
+    local relativeX = math.clamp((input.Position.X - GSliderTrack.AbsolutePosition.X) / GSliderTrack.AbsoluteSize.X, 0, 1)
+    GSliderHandle.Position = UDim2.new(relativeX, -6, 0.5, -6)
+    
+    local pct = math.floor(50 + relativeX * 150)
+    GSliderValText.Text = string.format("%d%% RAP", pct)
+    
+    if selectedItem and selectedItem.rap and selectedItem.rap > 0 then
+        local calc = math.floor(selectedItem.rap * (pct / 100))
+        GPriceBox.Text = formatNumber(calc)
+    end
+end
+
+GSliderHandle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        gSliderActive = true
+    end
+end)
+
+GSliderTrack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        gSliderActive = true
+        updateGSlider(input)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        gSliderActive = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if gSliderActive and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        updateGSlider(input)
+    end
+end)
+
+renderInventoryGrid("Pet")
+
+
+-- --------------------------------------------------------------------------
+-- TRANG 4: SAVED CONFIG LIST (XEM GIÁ ĐÃ LƯU)
+-- --------------------------------------------------------------------------
+local pageSavedList = createPage("SavedList")
+addMenuButton("SavedList", "📋 Giá Đã Lưu")
+
+local SavedScroll = Instance.new("ScrollingFrame")
+SavedScroll.Size = UDim2.new(1, 0, 1, 0)
+SavedScroll.BackgroundTransparency = 1
+SavedScroll.BorderSizePixel = 0
+SavedScroll.ScrollBarThickness = 4
+SavedScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+SavedScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+SavedScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+SavedScroll.Parent = pageSavedList
+
+local SavedLayout = Instance.new("UIListLayout")
+SavedLayout.SortOrder = Enum.SortOrder.LayoutOrder
+SavedLayout.Padding = UDim.new(0, 8)
+SavedLayout.Parent = SavedScroll
+
+local SavedPadding = Instance.new("UIPadding")
+SavedPadding.PaddingLeft = UDim.new(0, 10)
+SavedPadding.PaddingRight = UDim.new(0, 10)
+SavedPadding.PaddingTop = UDim.new(0, 10)
+SavedPadding.Parent = SavedScroll
+
+-- Hàm render lại danh sách cấu hình đã lưu
+local function renderSavedPricesList()
+    -- Xóa tất cả các dòng cũ (Frame và TextLabel đều phải xóa)
+    for _, child in ipairs(SavedScroll:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+    
+    local count = 0
+    local sortedItems = {}
+    for itemName, price in pairs(getgenv().PlazaSellConfig.CustomPrices) do
+        table.insert(sortedItems, { name = itemName, price = price })
+    end
+    table.sort(sortedItems, function(a, b) return a.name < b.name end)
+    
+    for _, item in ipairs(sortedItems) do
+        local itemName = item.name
+        local price = item.price
+        count = count + 1
+        local quantity = getgenv().PlazaSellConfig.CustomQuantities and getgenv().PlazaSellConfig.CustomQuantities[itemName] or "All"
+        local limit = getgenv().PlazaSellConfig.CustomListingsLimit and getgenv().PlazaSellConfig.CustomListingsLimit[itemName] or "All"
+        
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 40)
+        row.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+        row.BorderSizePixel = 0
+        row.Parent = SavedScroll
+        
+        local rowCorner = Instance.new("UICorner")
+        rowCorner.CornerRadius = UDim.new(0, 6)
+        rowCorner.Parent = row
+        
+        local rowStroke = Instance.new("UIStroke")
+        rowStroke.Color = Color3.fromRGB(25, 25, 25)
+        rowStroke.Thickness = 1
+        rowStroke.Parent = row
+        
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(0.40, 0, 1, 0)
+        nameLabel.Position = UDim2.new(0, 10, 0, 0)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = itemName
+        nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+        nameLabel.TextSize = 12
+        nameLabel.Font = Enum.Font.SourceSansBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.Parent = row
+        
+        local detailsLabel = Instance.new("TextLabel")
+        detailsLabel.Size = UDim2.new(0.30, 0, 1, 0)
+        detailsLabel.Position = UDim2.new(0.42, 0, 0, 0)
+        detailsLabel.BackgroundTransparency = 1
+        detailsLabel.Text = string.format("Giá: %s | SL: %s | Treo: %s", formatNumber(price), tostring(quantity), tostring(limit))
+        detailsLabel.TextColor3 = Color3.fromRGB(0, 170, 127)
+        detailsLabel.TextSize = 11
+        detailsLabel.Font = Enum.Font.SourceSansBold
+        detailsLabel.TextXAlignment = Enum.TextXAlignment.Left
+        detailsLabel.Parent = row
+        
+        -- Nút Xóa
+        local delBtn = Instance.new("TextButton")
+        delBtn.Size = UDim2.new(0.12, 0, 0, 26)
+        delBtn.Position = UDim2.new(0.86, 0, 0.5, -13)
+        delBtn.BackgroundColor3 = Color3.fromRGB(80, 20, 20)
+        delBtn.Text = "Xóa"
+        delBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+        delBtn.TextSize = 11
+        delBtn.Font = Enum.Font.SourceSansBold
+        delBtn.Parent = row
+        
+        local delCorner = Instance.new("UICorner")
+        delCorner.CornerRadius = UDim.new(0, 4)
+        delCorner.Parent = delBtn
+        
+        delBtn.MouseButton1Click:Connect(function()
+            getgenv().PlazaSellConfig.CustomPrices[itemName] = nil
+            if getgenv().PlazaSellConfig.CustomQuantities then
+                getgenv().PlazaSellConfig.CustomQuantities[itemName] = nil
+            end
+            if getgenv().PlazaSellConfig.CustomListingsLimit then
+                getgenv().PlazaSellConfig.CustomListingsLimit[itemName] = nil
+            end
+            saveConfig()
+            row:Destroy()
+            showNotification("Đã xóa", "Đã xóa cấu hình giá của " .. itemName)
+            -- Cập nhật lại số dòng trống
+            local checkCount = 0
+            for _ in pairs(getgenv().PlazaSellConfig.CustomPrices) do checkCount = checkCount + 1 end
+            if checkCount == 0 then
+                renderSavedPricesList()
+            end
+        end)
+        
+        -- Nút Sửa
+        local editBtn = Instance.new("TextButton")
+        editBtn.Size = UDim2.new(0.12, 0, 0, 26)
+        editBtn.Position = UDim2.new(0.72, 0, 0.5, -13)
+        editBtn.BackgroundColor3 = Color3.fromRGB(20, 40, 80)
+        editBtn.Text = "Sửa"
+        editBtn.TextColor3 = Color3.fromRGB(150, 200, 255)
+        editBtn.TextSize = 11
+        editBtn.Font = Enum.Font.SourceSansBold
+        editBtn.Parent = row
+        
+        local editCorner = Instance.new("UICorner")
+        editCorner.CornerRadius = UDim.new(0, 4)
+        editCorner.Parent = editBtn
+        
+        editBtn.MouseButton1Click:Connect(function()
+            local imgUrl = getItemIconByName(itemName)
+            
+            -- Tìm số lượng thực tế và giá RAP thực tế trong rương đồ
+            local actualAmt = 0
+            local rapVal = 0
+            pcall(function()
+                local ReplicatedStorage = game:GetService("ReplicatedStorage")
+                local Library = ReplicatedStorage:FindFirstChild("Library")
+                if Library then
+                    local Save = require(Library:WaitForChild("Client"):WaitForChild("Save"))
+                    local data = Save.Get()
+                    if data and data.Inventory then
+                        for catName, catData in pairs(data.Inventory) do
+                            for _, itemData in pairs(catData) do
+                                local Types = require(Library:WaitForChild("Items"):WaitForChild("Types"))
+                                local success, itemObj = pcall(function() return Types.From(catName, itemData) end)
+                                if success and itemObj then
+                                    if itemObj:GetName() == itemName then
+                                        actualAmt = actualAmt + (itemObj:GetAmount() or 1)
+                                        local RAPCmds = require(Library:WaitForChild("Client"):WaitForChild("RAPCmds"))
+                                        local rapSuccess, rapResult = pcall(function() return RAPCmds.Get(itemObj) end)
+                                        if rapSuccess and rapResult then
+                                            rapVal = rapResult
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            
+            selectedItem = { name = itemName, rap = rapVal, icon = imgUrl, amount = actualAmt }
+            GSelIcon.Image = imgUrl
+            GSelName.Text = itemName
+            
+            local isEng = getgenv().PlazaSellConfig.Language == "English"
+            local slText = isEng and "Qty" or "SL"
+            local amtStr = actualAmt > 0 and formatNumber(actualAmt) or "N/A"
+            local rapStr = rapVal > 0 and formatNumber(rapVal) or "N/A"
+            GSelRap.Text = "RAP: " .. rapStr .. " | " .. slText .. ": " .. amtStr
+            
+            GPriceBox.Text = formatNumber(price)
+            GAmtBox.Text = tostring(quantity)
+            GLimitBox.Text = tostring(limit)
+            GSliderHandle.Position = UDim2.new(0.333, -8, 0.5, -8)
+            GSliderValText.Text = "100% RAP"
+            
+            selectPage("Pricing")
+            showNotification("Sửa cấu hình", "Đã tải cấu hình " .. itemName .. " lên bảng sửa giá!")
+        end)
+    end
+    
+    if count == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Text = "Chưa có cấu hình giá vật phẩm nào được lưu."
+        empty.TextColor3 = Color3.fromRGB(100, 100, 100)
+        empty.TextSize = 12
+        empty.Font = Enum.Font.SourceSansItalic
+        empty.Parent = SavedScroll
+    end
+    applyTranslations(SavedScroll)
+end
+
+
+-- --------------------------------------------------------------------------
+-- TRANG 5: CATEGORY SELL (BÁN THEO LOẠI)
+-- --------------------------------------------------------------------------
+local pageCategory = createPage("Category")
+addMenuButton("Category", "📦 Bán Theo Loại")
+
+local catDesc = Instance.new("TextLabel")
+catDesc.Size = UDim2.new(1, 0, 0, 30)
+catDesc.BackgroundTransparency = 1
+catDesc.Text = "Cài đặt luật bán cho từng loại vật phẩm. (Ưu tiên giá riêng trong Kho Đồ > Giá theo Loại)"
+catDesc.TextColor3 = Color3.fromRGB(150, 150, 150)
+catDesc.TextSize = 12
+catDesc.Font = Enum.Font.SourceSansItalic
+catDesc.TextXAlignment = Enum.TextXAlignment.Left
+catDesc.Parent = pageCategory
+
+for _, catName in ipairs(getgenv().PlazaSellConfig.Categories) do
+    if catName ~= "Booth" and catName ~= "Pet" then
+        local catRow = Instance.new("Frame")
+        catRow.Size = UDim2.new(1, 0, 0, 70)
+        catRow.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+        catRow.BorderSizePixel = 0
+        catRow.Parent = pageCategory
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = catRow
+        
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -10, 0, 20)
+        lbl.Position = UDim2.new(0, 10, 0, 5)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = "Luật bán: " .. catName
+        lbl.TextColor3 = Color3.fromRGB(0, 170, 127)
+        lbl.TextSize = 13
+        lbl.Font = Enum.Font.SourceSansBold
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Parent = catRow
+        
+        getgenv().PlazaSellConfig.CategoryRules = getgenv().PlazaSellConfig.CategoryRules or {}
+        local rule = getgenv().PlazaSellConfig.CategoryRules[catName] or { Mode = "Disabled", Price = 1000, Percent = 0 }
+        getgenv().PlazaSellConfig.CategoryRules[catName] = rule
+        
+        -- Dropdown Mode
+        local modeBtn = Instance.new("TextButton")
+        modeBtn.Size = UDim2.new(0.3, 0, 0, 30)
+        modeBtn.Position = UDim2.new(0, 10, 0, 30)
+        modeBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        modeBtn.Text = rule.Mode
+        modeBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+        modeBtn.TextSize = 12
+        modeBtn.Font = Enum.Font.SourceSansBold
+        modeBtn.Parent = catRow
+        
+        local valBox = Instance.new("TextBox")
+        valBox.Size = UDim2.new(0.65, 0, 0, 30)
+        valBox.Position = UDim2.new(0.32, 0, 0, 30)
+        valBox.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+        valBox.PlaceholderText = rule.Mode == "Fixed" and "Nhập giá cố định..." or "Phần trăm RAP (VD: -5 hoặc 10)"
+        valBox.Text = rule.Mode == "Fixed" and tostring(rule.Price) or tostring(rule.Percent)
+        if rule.Mode == "Disabled" then valBox.Text = "Tắt" end
+        valBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+        valBox.TextSize = 12
+        valBox.Font = Enum.Font.SourceSans
+        valBox.ClearTextOnFocus = false
+        valBox.Parent = catRow
+        
+        local modeCorner = Instance.new("UICorner")
+        modeCorner.CornerRadius = UDim.new(0, 4)
+        modeCorner.Parent = modeBtn
+        
+        local valCorner = Instance.new("UICorner")
+        valCorner.CornerRadius = UDim.new(0, 4)
+        valCorner.Parent = valBox
+        
+        local function switchMode()
+            if rule.Mode == "Disabled" then rule.Mode = "Fixed"
+            elseif rule.Mode == "Fixed" then rule.Mode = "RAP"
+            else rule.Mode = "Disabled" end
+            
+            modeBtn.Text = rule.Mode
+            valBox.PlaceholderText = rule.Mode == "Fixed" and "Nhập giá cố định..." or "Phần trăm RAP (VD: -5 hoặc 10)"
+            valBox.Text = rule.Mode == "Fixed" and formatNumber(rule.Price) or tostring(rule.Percent)
+            if rule.Mode == "Disabled" then valBox.Text = "Tắt" end
+            saveConfig()
+        end
+        modeBtn.MouseButton1Click:Connect(switchMode)
+        
+        valBox.FocusLost:Connect(function()
+            if rule.Mode == "Disabled" then
+                valBox.Text = "Tắt"
+                return
+            end
+            local txt = valBox.Text
+            if rule.Mode == "Fixed" then
+                local parsed = parseNumber(txt)
+                if parsed then
+                    rule.Price = parsed
+                    valBox.Text = formatNumber(parsed)
+                else
+                    valBox.Text = formatNumber(rule.Price)
+                end
+            elseif rule.Mode == "RAP" then
+                local num = tonumber(txt)
+                if num then
+                    rule.Percent = num
+                    valBox.Text = tostring(num)
+                else
+                    valBox.Text = tostring(rule.Percent)
+                end
+            end
+            saveConfig()
+        end)
+    end
+end
+
+
+-- --------------------------------------------------------------------------
+-- TRANG 3: SYSTEM SETTINGS (ANTI AFK, DISCORD WEBHOOK, SERVER HOP)
+-- --------------------------------------------------------------------------
+local pageSystem = createPage("System")
+addMenuButton("System", "⚙️ Hệ Thống")
+
+createDropdown(pageSystem, "Ngôn ngữ giao diện (Language)", "Chọn ngôn ngữ hiển thị: Tiếng Việt hoặc English", { "Tiếng Việt", "English" }, "Language", function(val)
+    -- Dịch trực tiếp in-memory tất cả nhãn trên UI mà không cần tải lại file
+    applyTranslations(MainFrame)
+    
+    -- Nếu đang mở grid rương đồ, nạp lại để cập nhật nhãn động
+    if gActiveCategory then
+        renderInventoryGrid(gActiveCategory)
+    end
+    
+    local isEng = val == "English"
+    showNotification(
+        isEng and "Language Changed" or "Đổi Ngôn Ngữ",
+        isEng and "Interface language updated to English!" or "Đã chuyển đổi ngôn ngữ giao diện sang Tiếng Việt!"
+    )
+end)
+
+createToggle(pageSystem, "Bật chống treo máy (Anti-AFK)", "Hạn chế tối đa việc bị Roblox kick sau 20 phút không hoạt động", "AntiAFK", function(state)
+    if state then
+        if not getgenv().AntiAFKConnection then
+            getgenv().AntiAFKConnection = Players.LocalPlayer.Idled:Connect(function()
+                local vu = game:GetService("VirtualUser")
+                vu:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+                task.wait(1)
+                vu:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+            end)
+            print("[SYSTEM] Anti-AFK connection activated.")
+            
+            -- Bypass PS99 Idle Tracking
+            pcall(function()
+                local PlayerScripts = LocalPlayer.PlayerScripts:WaitForChild("Scripts", 5)
+                if PlayerScripts then
+                    local Core = PlayerScripts:FindFirstChild("Core")
+                    if Core then
+                        if Core:FindFirstChild("Server Closing") then Core["Server Closing"].Enabled = false end
+                        if Core:FindFirstChild("Idle Tracking") then Core["Idle Tracking"].Enabled = false end
+                    end
+                end
+                Network.Fire("Idle Tracking: Stop Timer")
+            end)
+        end
+    else
+        if getgenv().AntiAFKConnection then
+            getgenv().AntiAFKConnection:Disconnect()
+            getgenv().AntiAFKConnection = nil
+            print("[SYSTEM] Anti-AFK connection deactivated.")
+        end
+    end
+end)
+
+createToggle(pageSystem, "Tự động nhảy server (Auto Server Hop)", "Tìm phòng plaza mới nếu chợ vắng hoặc hết đồ treo bán", "AutoHop", function(state)
+    print("[SYSTEM] Auto server hop status:", state and "ENABLED" or "DISABLED")
+end)
+
+createSlider(pageSystem, "Ngưỡng người chơi tối thiểu", "Nhảy server plaza khác nếu số người chơi hiện tại bằng hoặc dưới mức này", 1, 30, "MinPlayers", function(val)
+    print("[SYSTEM] Server hop player threshold set to:", val)
+end)
+
+createInput(pageSystem, "Số slot quầy tối đa (Max Slots)", "Đặt số lượng ô bán hàng tối đa (Mặc định: 12, tối đa: 150)", tostring(getgenv().PlazaSellConfig.MaxSlots or 12), "MaxSlots", function(val)
+    print("[SYSTEM] Max booth slots limit updated to:", val)
+end)
+
+createInput(pageSystem, "Giới hạn RAM nhảy server (MB)", "Khi bộ nhớ vượt mức này, bot sẽ tự nhảy server (Mặc định: 4000)", tostring(getgenv().PlazaSellConfig.AutoRejoinRAM or 4000), "AutoRejoinRAM", function(val)
+    print("[SYSTEM] Auto Rejoin RAM threshold updated to:", val)
+end)
+
+createInput(pageSystem, "Thời gian tự động nhảy server (giây)", "Tự động nhảy server theo thời gian (VD: 3600 = 1 tiếng, 10800 = 3 tiếng, 0 = Tắt)", tostring(getgenv().PlazaSellConfig.AutoRejoinTime or 10800), "AutoRejoinTime", function(val)
+    print("[SYSTEM] Auto Rejoin Time threshold updated to:", val)
+end)
+
+-- Tự động kích hoạt lại 3D Rendering để hình ảnh hiển thị bình thường
+pcall(function() game:GetService("RunService"):Set3dRenderingEnabled(true) end)
+
+createInput(pageSystem, "Đường dẫn Discord Webhook", "URL nhận log doanh thu giao dịch tự động", "https://discord.com/api/webhooks/...", "WebhookURL", function(val)
+    print("[SYSTEM] New Discord Webhook URL configured successfully.")
+end)
+
+createButton(pageSystem, "Gửi tin nhắn chạy thử (Webhook Test)", Color3.fromRGB(15, 15, 15), function()
+    local url = getgenv().PlazaSellConfig.WebhookURL
+    if not url or url == "" or not url:find("https://discord.com/api/webhooks") then
+        showNotification("Lỗi", "Vui lòng cấu hình Webhook URL trước!")
+        return
+    end
+    
+    -- Lấy link ảnh trực tiếp từ API Roblox
+    local embedImg = getAssetThumbnailUrl(14293722239)
+    
+    -- Lấy số lượng kim cương hiện tại của người chơi
+    local curDiamonds = getPlayerDiamonds()
+    
+    -- Lấy thống kê thực tế
+    local sold1H = getSalesCount1H()
+    local sold24H = getSalesCount24H()
+    local gems1H = getGems1H()
+    local gems24H = getGems24H()
+    
+    -- Giả lập dữ liệu nếu chưa bán được gì thực tế để tin nhắn chạy thử hiển thị đẹp mắt
+    if sold1H == 0 then sold1H = 5 end
+    if sold24H == 0 then sold24H = 120 end
+    if gems1H == 0 then gems1H = 1500000 end -- 1.5m
+    if gems24H == 0 then gems24H = 36000000 end -- 36m
+    
+    local isEng = getgenv().PlazaSellConfig.Language == "English"
+    local titleText = isEng and "Item sold successfully! (Test)" or "Vật phẩm đã bán thành công! (Test)"
+    local nameField = isEng and "Item Name" or "Tên vật phẩm"
+    local priceField = isEng and "Sell Price" or "Giá bán"
+    local playerField = isEng and "Player" or "Người chơi"
+    local gemsOwnedField = isEng and "Gems Owned" or "Kim cương hiện có"
+    local amountSoldField = isEng and "Amount Sold" or "Số lượng bán được"
+    local gemsEarnedField = isEng and "Gems Earned" or "Kim cương kiếm được"
+    
+    local gemsValue = isEng and "💎" or "💎"
+    local soldSpeed = tostring(sold1H) .. (isEng and " items / hour\n" or " cái / giờ\n") .. tostring(sold24H) .. (isEng and " items / day" or " cái / ngày")
+    local gemsSpeed = "+" .. formatNumber(gems1H) .. (isEng and " / hour\n+" or " / giờ\n+") .. formatNumber(gems24H) .. (isEng and " / day" or " / ngày")
+    
+    local payload = HttpService:JSONEncode({
+        embeds = {
+            {
+                title = titleText,
+                color = 5814783,
+                fields = {
+                    { name = nameField, value = "Huge Cat", inline = true },
+                    { name = priceField, value = "150m " .. (isEng and "Gems" or "Kim cương"), inline = true },
+                    { name = playerField, value = LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")", inline = false },
+                    { name = gemsOwnedField, value = formatNumber(curDiamonds) .. " " .. gemsValue, inline = true },
+                    { name = amountSoldField, value = soldSpeed, inline = true },
+                    { name = gemsEarnedField, value = gemsSpeed, inline = true }
+                },
+                thumbnail = {
+                    url = embedImg
+                },
+                footer = {
+                    text = "Auto Sell Plaza Hub | Thời gian: " .. os.date("%H:%M:%S")
+                }
+            }
+        }
+    })
+    
+    task.spawn(function()
+        local success, err = pcall(function()
+            local req = syn and syn.request or http and http.request or http_request or request
+            if not req then error("Executor không hỗ trợ HTTP request!") end
+            return req({
+                Url = url,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = payload
+            })
+        end)
+        if success then
+            showNotification("Thành công", "Đã gửi test webhook thành công!")
+        else
+            showNotification("Thất bại", "Lỗi gửi webhook: " .. tostring(err))
+        end
+    end)
+end)
+
+-- Kích hoạt render danh sách mỗi khi chuyển sang trang SavedList
+local oldSelectPage = selectPage
+selectPage = function(name)
+    oldSelectPage(name)
+    if name == "SavedList" then
+        renderSavedPricesList()
+    end
+end
+
+
+-- --------------------------------------------------------------------------
+-- 7. KHỞI TẠO ĐIỀU HƯỚNG MẶC ĐỊNH
+-- Áp dụng đa ngôn ngữ cho toàn bộ giao diện trước khi hiển thị
+applyTranslations(MainFrame)
+
+selectPage("Home")
+
+
+-- --------------------------------------------------------------------------
+-- 8. NÚT NỔI BẬT/TẮT GIAO DIỆN (FLOATING BUTTON - DRAGGABLE)
+-- --------------------------------------------------------------------------
+local toggleGui = Instance.new("ScreenGui")
+toggleGui.Name = "AutoSellPlazaToggleGui"
+toggleGui.ResetOnSpawn = false
+toggleGui.Parent = PlayerGui
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "ToggleButton"
+toggleBtn.Parent = toggleGui
+toggleBtn.Size = UDim2.fromOffset(50, 50)
+toggleBtn.Position = UDim2.new(0, 10, 0.5, -25) -- Bên trái màn hình
+toggleBtn.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+toggleBtn.Text = "🛒"
+toggleBtn.TextSize = 24
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Font = Enum.Font.SourceSansBold
+toggleBtn.Active = true
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0.5, 0)
+toggleCorner.Parent = toggleBtn
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(0, 170, 127)
+toggleStroke.Thickness = 2
+toggleStroke.Parent = toggleBtn
+
+-- Kéo thả nút nổi
+local tDragging, tDragInput, tDragStart, tStartPos
+local function updateTDrag(input)
+    local delta = input.Position - tDragStart
+    toggleBtn.Position = UDim2.new(tStartPos.X.Scale, tStartPos.X.Offset + delta.X, tStartPos.Y.Scale, tStartPos.Y.Offset + delta.Y)
+end
+
+toggleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        tDragging = true
+        tDragStart = input.Position
+        tStartPos = toggleBtn.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                tDragging = false
+            end
+        end)
+    end
+end)
+
+toggleBtn.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        tDragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == tDragInput and tDragging then
+        updateTDrag(input)
+    end
+end)
+
+-- Click nút nổi để Toggle UI ẩn hiện hoàn chỉnh
+toggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
+
+-- Đóng mở bằng phím LeftControl dự phòng cho PC
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if not gpe and input.KeyCode == Enum.KeyCode.LeftControl then
+        MainFrame.Visible = not MainFrame.Visible
+    end
+end)
+
+
+-- --------------------------------------------------------------------------
+-- 9. VÒNG LẶP CHẠY NGẦM TỰ DỊCH CHUYỂN PLAZA
+-- --------------------------------------------------------------------------
+local function checkAndTeleport()
+    local config = getgenv().PlazaSellConfig
+    if not config or not config.Enabled or not config.AutoTeleport then return end
+    
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local LibraryInstance = ReplicatedStorage:FindFirstChild("Library")
+    if not LibraryInstance then return end
+    
+    local TradingPlazaCmds, PlaceFile
+    
+    -- Nạp TradingPlazaCmds
+    local client = LibraryInstance:FindFirstChild("Client")
+    local cmdModule = client and client:FindFirstChild("TradingPlazaCmds")
+    if cmdModule then
+        pcall(function() TradingPlazaCmds = require(cmdModule) end)
+    end
+    
+    -- Nạp PlaceFile
+    local modules = LibraryInstance:FindFirstChild("Modules")
+    local fileModule = modules and modules:FindFirstChild("PlaceFile")
+    if fileModule then
+        pcall(function() PlaceFile = require(fileModule) end)
+    end
+    
+    -- Kiểm tra trạng thái hiện tại
+    local isOnPlaza = false
+    if TradingPlazaCmds and TradingPlazaCmds.IsOnTradingPlaza then
+        isOnPlaza = TradingPlazaCmds.IsOnTradingPlaza()
+    else
+        isOnPlaza = game.PlaceId == 15502339080 or game.PlaceId == 15588442388 or workspace:FindFirstChild("TradingPlaza") ~= nil
+    end
+    
+    if not isOnPlaza then
+        print("[TELEPORT] Main world detected. Proceeding to teleport...")
+        local targetPlaceId
+        local selection = config.PlazaType
+        
+        local normalId = 15502339080
+        local proId = 15588442388
+        
+        if PlaceFile and PlaceFile.LocalPlaces then
+            normalId = PlaceFile.LocalPlaces.Trading or normalId
+            proId = PlaceFile.LocalPlaces.ProTrading or proId
+        end
+        
+        if selection == "Normal Plaza" then
+            targetPlaceId = normalId
+        elseif selection == "Pro Plaza" then
+            targetPlaceId = proId
+        else -- Auto Select
+            if TradingPlazaCmds and TradingPlazaCmds.GetAvailable then
+                local av = TradingPlazaCmds.GetAvailable()
+                if av and #av > 0 then
+                    targetPlaceId = av[1].PlaceId
+                end
+            end
+            if not targetPlaceId then targetPlaceId = normalId end
+        end
+        
+        if targetPlaceId then
+            task.wait(1)
+            if TradingPlazaCmds and TradingPlazaCmds.RequestTradingPlaza then
+                TradingPlazaCmds.RequestTradingPlaza(targetPlaceId)
+            else
+                pcall(function()
+                    game:GetService("TeleportService"):Teleport(targetPlaceId, LocalPlayer)
+                end)
+            end
+        end
+    end
+end
+
+local function serverHop()
+    local config = getgenv().PlazaSellConfig
+    if not config or not config.AutoHop then return end
+    print("[SYSTEM] Attempting to Auto Server Hop...")
+    
+    local targetPlaceId = game.PlaceId
+    if config.PlazaType == "Normal Plaza" then targetPlaceId = 15502339080
+    elseif config.PlazaType == "Pro Plaza" then targetPlaceId = 15588442388 end
+    
+    local servers = {}
+    local req = syn and syn.request or http and http.request or http_request or request
+    if req then
+        local success, res = pcall(function()
+            return req({
+                Url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100", targetPlaceId),
+                Method = "GET"
+            })
+        end)
+        if success and res.Body then
+            local decoded = HttpService:JSONDecode(res.Body)
+            if decoded and decoded.data then
+                for _, srv in ipairs(decoded.data) do
+                    if srv.playing and srv.maxPlayers and srv.playing < srv.maxPlayers - 2 and srv.id ~= game.JobId then
+                        table.insert(servers, srv)
+                    end
+                end
+            end
+        end
+    end
+    
+    if #servers > 0 then
+        local target = servers[math.random(1, #servers)]
+        print("[SYSTEM] Hopping to server:", target.id)
+        game:GetService("TeleportService"):TeleportToPlaceInstance(targetPlaceId, target.id, LocalPlayer)
+    else
+        print("[SYSTEM] No suitable servers found. Rejoining random server...")
+        game:GetService("TeleportService"):Teleport(targetPlaceId, LocalPlayer)
+    end
+end
+getgenv().ServerHop = serverHop
+
+local function checkRAM()
+    local config = getgenv().PlazaSellConfig
+    if not config then return end
+    
+    local ramMB = math.floor(game:GetService("Stats"):GetTotalMemoryUsageMb())
+    local threshold = tonumber(config.AutoRejoinRAM) or 4000
+    if ramMB >= threshold then
+        print(string.format("[SYSTEM] RAM Warning: %d MB exceeded threshold %d MB. Hopping server...", ramMB, threshold))
+        serverHop()
+        task.wait(10)
+    end
+end
+
+-- Lưu thời gian bắt đầu script
+getgenv().PlazaSellScriptStartTime = getgenv().PlazaSellScriptStartTime or os.time()
+
+local function checkRejoinTimer()
+    local config = getgenv().PlazaSellConfig
+    if not config then return end
+    
+    local maxTime = tonumber(config.AutoRejoinTime) or 0
+    if maxTime > 0 then
+        local elapsed = os.time() - getgenv().PlazaSellScriptStartTime
+        if elapsed >= maxTime then
+            print(string.format("[SYSTEM] Time Warning: %d seconds elapsed, reached threshold %d seconds. Hopping server...", elapsed, maxTime))
+            -- Đặt lại timer để tránh kẹt nếu hop lỗi
+            getgenv().PlazaSellScriptStartTime = os.time()
+            serverHop()
+            task.wait(10)
+        end
+    end
+end
+
+local function checkServerPop()
+    local config = getgenv().PlazaSellConfig
+    if not config or not config.AutoHop then return end
+    
+    local minPlayers = tonumber(config.MinPlayers) or 5
+    if #Players:GetPlayers() <= minPlayers then
+        print("[SYSTEM] Server population too low. Hopping server...")
+        serverHop()
+        task.wait(10)
+    end
+end
+
+task.spawn(function()
+    while task.wait(5) do
+        pcall(checkAndTeleport)
+        pcall(checkRAM)
+        pcall(checkRejoinTimer)
+    end
+end)
+
+task.spawn(function()
+    while task.wait(60) do
+        pcall(checkServerPop)
+    end
+end)
+
+-- --------------------------------------------------------------------------
+-- 9. VÒNG LẶP AUTO SELL TREO BÁN TỰ ĐỘNG (BACKGROUND AUTO-SELL EXECUTION LOOP)
+-- --------------------------------------------------------------------------
+local mySession = math.random(100000, 999999)
+getgenv().AutoSellSession = mySession
+getgenv().PlazaSellItemCooldowns = getgenv().PlazaSellItemCooldowns or {}
+
+local function runAutoSellProcess()
+    while true do
+        task.wait(10) -- Chạy kiểm tra mỗi 10 giây
+        
+        -- Dừng luồng cũ nếu phát hiện session mới (khi re-execute script)
+        if getgenv().AutoSellSession ~= mySession then
+            print("[DEBUG] New script session detected. Stopping previous Auto Sell thread.")
+            break
+        end
+        
+        local config = getgenv().PlazaSellConfig
+        if config and config.Enabled then
+            pcall(function()
+                -- 1. Đảm bảo đang ở Trading Plaza
+                local isOnPlaza = false
+                local ReplicatedStorage = game:GetService("ReplicatedStorage")
+                local LibraryInstance = ReplicatedStorage:FindFirstChild("Library")
+                if not LibraryInstance then return end
+                
+                local Client = LibraryInstance:FindFirstChild("Client")
+                local TradingPlazaCmds
+                local cmdModule = Client and Client:FindFirstChild("TradingPlazaCmds")
+                if cmdModule then
+                    pcall(function() TradingPlazaCmds = require(cmdModule) end)
+                end
+                
+                if TradingPlazaCmds and TradingPlazaCmds.IsOnTradingPlaza then
+                    isOnPlaza = TradingPlazaCmds.IsOnTradingPlaza()
+                else
+                    isOnPlaza = game.PlaceId == 15502339080 or game.PlaceId == 15588442388 or workspace:FindFirstChild("TradingPlaza") ~= nil
+                end
+                if not isOnPlaza then return end
+                
+                -- [1] Kiểm tra Global Player Cooldown TRƯỚC khi làm gì khác (di chuyển lên đầu để tránh spam claim booth)
+                local globalCooldown = getgenv().PlazaSellGlobalCooldown
+                local globalCooldownDur = getgenv().PlazaSellGlobalCooldownDur or 120
+                if globalCooldown then
+                    local elapsed = os.time() - globalCooldown
+                    if elapsed < globalCooldownDur then
+                        -- Không in log mỗi tick để tránh rác console, chỉ khi cooldown kết thúc mới in
+                        if elapsed % 30 == 0 or elapsed == 0 then
+                            print(string.format("[AUTO SELL] Player cooldown active. Waiting... (%ds / %ds)", elapsed, globalCooldownDur))
+                        end
+                        return
+                    else
+                        getgenv().PlazaSellGlobalCooldown = nil
+                        getgenv().PlazaSellGlobalCooldownDur = nil
+                        getgenv().PlazaSellItemCooldowns = {}
+                        getgenv().PlazaSellListedCache = nil
+                        print("[AUTO SELL] Player cooldown expired. Resuming operation...")
+                    end
+                end
+                
+                -- Hàm tìm và chiếm booth trống tốt nhất (từ ID nhỏ nhất/hàng đầu tiên)
+                local function claimBestBooth()
+                    local TradingPlaza = workspace:FindFirstChild("TradingPlaza")
+                    local BoothSpawns = TradingPlaza and TradingPlaza:FindFirstChild("BoothSpawns")
+                    if not BoothSpawns then 
+                        print("[DEBUG] Folder BoothSpawns not found in Workspace!")
+                        return false, nil 
+                    end
+                    
+                    local candidates = {}
+                    for _, child in ipairs(BoothSpawns:GetChildren()) do
+                        local idAttr = child:GetAttribute("ID")
+                        if idAttr then
+                            table.insert(candidates, {
+                                model = child,
+                                id = idAttr,
+                                numId = tonumber(idAttr) or 999
+                            })
+                        end
+                    end
+                    
+                    print(string.format("[DEBUG] Found %d empty booths on the map.", #candidates))
+                    
+                    table.sort(candidates, function(a, b)
+                        return a.numId < b.numId
+                    end)
+                    
+                    for _, candidate in ipairs(candidates) do
+                        if candidate.model.Parent == BoothSpawns then
+                            print(string.format("[DEBUG] Attempting to claim Booth ID: %s (Priority: %d)", tostring(candidate.id), candidate.numId))
+                            pcall(function()
+                                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                                    LocalPlayer.Character:PivotTo(candidate.model:GetPivot() * CFrame.new(0, 2, 0))
+                                end
+                            end)
+                            task.wait(0.2)
+                            
+                            local success = Network.Invoke("Booths_ClaimBooth", candidate.id)
+                            if success then
+                                print(string.format("[DEBUG] Successfully claimed Booth ID: %s", tostring(candidate.id)))
+                                return true, candidate.id
+                            end
+                            print(string.format("[DEBUG] Failed to claim Booth ID: %s. Trying next...", tostring(candidate.id)))
+                            task.wait(0.1)
+                        end
+                    end
+                    return false, nil
+                end
+
+                -- Hàm lấy tất cả UID vật phẩm đang được treo bán tại Booth của mình
+                -- forceRefresh = true: buộc fetch từ server dù có cache hay không
+                local function getListedUIDs(forceRefresh)
+                    local CACHE_TTL = 10 -- số giây giữ cache trước khi refresh (giảm xuống 10s để phát hiện slot bán nhanh hơn)
+                    local cache = getgenv().PlazaSellListedCache
+                    
+                    -- Trả cache nếu còn hạn và không buộc refresh
+                    if not forceRefresh and cache and cache.ts and (os.time() - cache.ts) < CACHE_TTL then
+                        return cache.listed, cache.count
+                    end
+                    
+                    local listed = {}
+                    local states = nil
+                    
+                    -- Ưu tiên: getsenv (không tốn rate limit)
+                    pcall(function()
+                        local ReplicatedStorage = game:GetService("ReplicatedStorage")
+                        local Library = ReplicatedStorage:FindFirstChild("Library")
+                        local Client = Library and Library:FindFirstChild("Client")
+                        local playerScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+                        
+                        local BoothCmds = (Client and Client:FindFirstChild("BoothCmds")) 
+                            or (playerScripts and (playerScripts:FindFirstChild("Booths Frontend", true) or playerScripts:FindFirstChild("BoothCmds", true)))
+                            
+                        if BoothCmds and getsenv then
+                            local env = getsenv(BoothCmds)
+                            if env then
+                                local getStateFunc = env.getState or env.GetState
+                                if type(getStateFunc) == "function" then
+                                    local myState = getStateFunc(LocalPlayer)
+                                    if not myState and getupvalues then
+                                        local upvs = getupvalues(getStateFunc)
+                                        if upvs and upvs[1] and type(upvs[1]) == "table" then
+                                            myState = upvs[1][LocalPlayer] or upvs[1][LocalPlayer.UserId]
+                                        end
+                                    end
+                                    if myState and myState.Listings then
+                                        states = { [LocalPlayer] = myState }
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                    
+                    if states and states[LocalPlayer] then
+                        local myState = states[LocalPlayer]
+                        local count = 0
+                        for _, listing in pairs(myState.Listings) do
+                            local itemUID = nil
+                            if listing.Item then
+                                pcall(function() itemUID = listing.Item:GetUID() end)
+                                if not itemUID and listing.Item._uid then itemUID = listing.Item._uid end
+                                if not itemUID and listing.Item.uid then itemUID = listing.Item.uid end
+                            end
+                            if not itemUID and listing.ItemData and listing.ItemData.uid then
+                                itemUID = listing.ItemData.uid
+                            end
+                            
+                            if itemUID then
+                                local amt = 1
+                                if listing.Item then
+                                    pcall(function() amt = listing.Item:GetAmount() or 1 end)
+                                elseif listing.ItemData then
+                                    amt = listing.ItemData._am or listing.ItemData.am or 1
+                                end
+                                listed[itemUID] = (listed[itemUID] or 0) + amt
+                                count = count + 1
+                            end
+                        end
+                        -- Cập nhật cache
+                        getgenv().PlazaSellListedCache = { listed = listed, count = count, ts = os.time() }
+                        return listed, count
+                    end
+                    
+                    -- Fallback: Server Remote (chỉ gọi khi getsenv thất bại)
+                    local success, serverStates = pcall(function()
+                        return Network.Invoke("Booths_GetInitialState")
+                    end)
+                    if success and type(serverStates) == "table" then
+                        for k, state in pairs(serverStates) do
+                            if type(state) == "table" then
+                                local isMine = false
+                                if tostring(k) == tostring(LocalPlayer.UserId) then isMine = true end
+                                
+                                local pObj = state.Player or state.Owner or state.player or state.owner
+                                if typeof(pObj) == "Instance" and pObj:IsA("Player") and pObj.UserId == LocalPlayer.UserId then
+                                    isMine = true
+                                end
+                                
+                                local pId = state.PlayerID or state.PlayerId or state.UserId or state.OwnerId or state.PlayerUserId
+                                if pId and tostring(pId) == tostring(LocalPlayer.UserId) then
+                                    isMine = true
+                                end
+                                
+                                if isMine and state.Listings then
+                                    local count = 0
+                                    for _, listing in pairs(state.Listings) do
+                                        if listing.ItemData and listing.ItemData.uid then
+                                            local amt = listing.ItemData._am or listing.ItemData.am or 1
+                                            listed[listing.ItemData.uid] = (listed[listing.ItemData.uid] or 0) + amt
+                                            count = count + 1
+                                        end
+                                    end
+                                    getgenv().PlazaSellListedCache = { listed = listed, count = count, ts = os.time() }
+                                    getgenv().PlazaSellLastStateCall = os.time()
+                                    return listed, count
+                                end
+                            end
+                        end
+                    end
+                    return listed, 0
+                end
+
+                -- 2. Đảm bảo đã chiếm booth
+                local myBooth = nil
+                pcall(function()
+                    local activeModel = Signal.Invoke("Booths_GetActiveModel")
+                    if activeModel then
+                        myBooth = activeModel
+                    end
+                end)
+                
+                -- Kiểm tra trực tiếp workspace.__THINGS.Booths (Model quầy đã claim của nhân vật) - 0% tốn Network
+                if not myBooth then
+                    pcall(function()
+                        local things = workspace:FindFirstChild("__THINGS")
+                        local boothsFolder = things and things:FindFirstChild("Booths")
+                        if boothsFolder then
+                            for _, boothModel in ipairs(boothsFolder:GetChildren()) do
+                                local ownerId = boothModel:GetAttribute("Owner")
+                                if ownerId and tostring(ownerId) == tostring(LocalPlayer.UserId) then
+                                    myBooth = boothModel
+                                    print("[DEBUG] Found existing booth ownership via workspace.__THINGS.Booths.")
+                                    break
+                                end
+                            end
+                        end
+                    end)
+                end
+                
+                if not myBooth then
+                    print("[AUTO SELL] Finding and claiming the best empty booth...")
+                    local claimed, boothId = claimBestBooth()
+                    if claimed then
+                        print("[AUTO SELL] Successfully claimed Booth ID:", boothId)
+                        getgenv().PlazaSellFreshClaimTime = os.time()
+                        getgenv().PlazaSellGlobalCooldown = nil
+                        getgenv().PlazaSellGlobalCooldownDur = nil -- Reset backoff
+                        getgenv().PlazaSellItemCooldowns = {}
+                        getgenv().PlazaSellListedCache = { listed = {}, count = 0, ts = os.time() }
+                        getgenv().PlazaSellSlotCache = 0
+                        task.wait(3.0) -- Chờ server settle sau claim
+                    else
+                        print("[AUTO SELL] Could not claim a booth (Server cooldown or rate limit active). Retrying in 30s...")
+                        getgenv().PlazaSellGlobalCooldown = os.time()
+                        getgenv().PlazaSellGlobalCooldownDur = 30
+                        return -- DỪNG LẠI, KHÔNG tiếp tục treo đồ khi chưa có quầy!
+                    end
+                end
+                
+                -- 3. Quét rương đồ và tự động treo bán các vật phẩm trong cấu hình
+                local tickQuotas = {}
+                for name, qty in pairs(config.CustomQuantities) do
+                    tickQuotas[name] = qty
+                end
+                
+                local Save = require(LibraryInstance:WaitForChild("Client"):WaitForChild("Save"))
+                local Types = require(LibraryInstance:WaitForChild("Items"):WaitForChild("Types"))
+                local RAPCmds = nil
+                pcall(function() RAPCmds = require(LibraryInstance:WaitForChild("Client"):WaitForChild("RAPCmds")) end)
+                local data = Save.Get()
+                if not data or not data.Inventory then return end
+                
+                -- Lấy danh sách vật phẩm đã treo bán (dùng cache, tránh spam Booths_GetInitialState mỗi tick)
+                local listedUIDs, listedCount = getListedUIDs(false)
+                -- Cập nhật SlotCache trực tiếp theo thực tế
+                getgenv().PlazaSellSlotCache = listedCount
+                
+                -- Booth đã đầy → skip toàn bộ scan, không in summary table
+                local maxSlots = config.MaxSlots or 25
+                if listedCount >= maxSlots then
+                    -- In 1 dòng mỗi 60s thay vì mỗi 10s
+                    local lastFullLog = getgenv().PlazaSellLastFullLog or 0
+                    if os.time() - lastFullLog >= 60 then
+                        print(string.format("[AUTO SELL] Booth full (%d/%d). Monitoring for sold slots...", listedCount, maxSlots))
+                        getgenv().PlazaSellLastFullLog = os.time()
+                    end
+                    return
+                end
+                
+                local qualifiedQueue = {}
+                local scanStats = { total = 0, locked = 0, noPrice = 0, cooldown = 0, alreadyListed = 0, limitReached = 0 }
+                
+                for catName, catData in pairs(data.Inventory) do
+                    for uid, itemData in pairs(catData) do
+                        if not getgenv().PlazaSellConfig.Enabled then return end
+                        
+                        local success, itemObj = pcall(function() return Types.From(catName, itemData) end)
+                        if success and itemObj then
+                            local isLocked = false
+                            pcall(function() isLocked = itemObj:IsLocked() end)
+                            
+                            if isLocked then
+                                scanStats.locked = scanStats.locked + 1
+                            else
+                                local itemName = itemObj:GetName()
+                                local priceSource = "Custom"
+                                scanStats.total = scanStats.total + 1
+                                
+                                local sellPrice = config.CustomPrices[itemName]
+                                if not sellPrice or sellPrice <= 0 then
+                                    local noShiny = itemName:gsub("^Shiny%s+", "")
+                                    sellPrice = config.CustomPrices[noShiny]
+                                end
+                                if not sellPrice or sellPrice <= 0 then
+                                    local baseName = nil
+                                    pcall(function() baseName = itemObj:Directory().name end)
+                                    if baseName then 
+                                        sellPrice = config.CustomPrices[baseName]
+                                        if not sellPrice or sellPrice <= 0 then
+                                            local isGold = false
+                                            local isRb = false
+                                            pcall(function() isGold = itemObj:IsGolden() end)
+                                            pcall(function() isRb = itemObj:IsRainbow() end)
+                                            if isGold then
+                                                sellPrice = config.CustomPrices["Golden " .. baseName]
+                                            elseif isRb then
+                                                sellPrice = config.CustomPrices["Rainbow " .. baseName]
+                                            end
+                                        end
+                                    end
+                                end
+                                
+                                local limitVal = config.CustomListingsLimit and (config.CustomListingsLimit[itemName] or config.CustomListingsLimit[itemName:gsub("^Shiny%s+", "")]) or "All"
+                                local targetQty = tickQuotas[itemName] or tickQuotas[itemName:gsub("^Shiny%s+", "")] or "All"
+                                local isStackableItem = not (catName == "Pet" or catName == "Hoverboard" or catName == "Booth")
+                                -- maxSlots: targetQty=All → fill toàn bộ slot còn trống (burst mode)
+                                --           targetQty=N   → ceil(N/50000) slots
+                                local maxSlotsForItem
+                                if not isStackableItem then
+                                    maxSlotsForItem = 1 -- pet/hoverboard luôn 1 slot
+                                elseif targetQty == "All" then
+                                    maxSlotsForItem = (config.MaxSlots or 25) - listedCount -- tất cả slot còn lại
+                                else
+                                    local qtyNum = tonumber(targetQty) or 0
+                                    maxSlotsForItem = math.max(1, math.ceil(qtyNum / 50000))
+                                end
+                                
+                                if not sellPrice or sellPrice <= 0 then
+                                    local itemCategory = catName
+                                    if catName == "Pet" then
+                                        if itemObj.IsHuge and itemObj:IsHuge() then itemCategory = "Huge"
+                                        elseif itemObj.IsTitanic and itemObj:IsTitanic() then itemCategory = "Titanic"
+                                        elseif (itemObj.IsGargantuan and itemObj:IsGargantuan()) or (itemObj.Gargantuan and itemObj:Gargantuan()) or (itemName and tostring(itemName):find("Gargantuan")) then itemCategory = "Gargantuan"
+                                        end
+                                    end
+                                    local rule = config.CategoryRules and config.CategoryRules[itemCategory]
+                                    if rule and rule.Mode ~= "Disabled" then
+                                        if rule.Mode == "Fixed" then
+                                            sellPrice = tonumber(rule.Price) or 0
+                                            priceSource = "Category (Fixed)"
+                                        elseif rule.Mode == "RAP" then
+                                            local RAPCmds = require(LibraryInstance:WaitForChild("Client"):WaitForChild("RAPCmds"))
+                                            local rapSuccess, rapResult = pcall(function() return RAPCmds.Get(itemObj) end)
+                                            if rapSuccess and type(rapResult) == "number" and rapResult > 0 then
+                                                local pct = tonumber(rule.Percent) or 0
+                                                sellPrice = math.floor(rapResult * (1 + pct / 100))
+                                                priceSource = string.format("RAP (%+d%%)", pct)
+                                            end
+                                        end
+                                    end
+                                end
+                                
+                                if sellPrice and sellPrice > 0 then
+                                    local totalAmtInInv = itemObj:GetAmount() or 1
+                                    local alreadyListedAmt = listedUIDs[uid] or 0
+                                    local itemCooldowns = getgenv().PlazaSellItemCooldowns
+                                    local isCoolingDown = itemCooldowns[uid] and (os.time() - itemCooldowns[uid]) < 60
+                                    local isLimitReached = limitVal ~= "All" and (tonumber(limitVal) or 0) <= 0
+                                    local isAlreadyListed = (not isStackableItem and alreadyListedAmt > 0) or (isStackableItem and alreadyListedAmt >= totalAmtInInv)
+                                    
+                                    if not isCoolingDown and not isLimitReached and not isAlreadyListed then
+                                        local remInv = totalAmtInInv - alreadyListedAmt
+                                        table.insert(qualifiedQueue, {
+                                            cat = catName,
+                                            name = itemName,
+                                            price = sellPrice,
+                                            priceSource = priceSource,
+                                            amt = remInv,
+                                            uid = uid,
+                                            limitVal = limitVal,
+                                            targetQty = targetQty,
+                                            maxSlots = maxSlotsForItem,
+                                            isStackable = isStackableItem
+                                        })
+                                    elseif isCoolingDown then
+                                        scanStats.cooldown = scanStats.cooldown + 1
+                                    elseif isLimitReached then
+                                        scanStats.limitReached = scanStats.limitReached + 1
+                                    elseif isAlreadyListed then
+                                        scanStats.alreadyListed = scanStats.alreadyListed + 1
+                                    end
+                                else
+                                    scanStats.noPrice = scanStats.noPrice + 1
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                -- Cooldown check moved to the top of the loop
+                
+                -- [2] In Bảng Thống Kê Debug (chỉ khi không trong cooldown)
+                if #qualifiedQueue > 0 then
+                    print("\n======================================== [AUTO SELL SUMMARY] ========================================")
+                    print(string.format("Booth Slots Used: %d/%d | Qualified Items to List: %d", listedCount, config.MaxSlots or 25, #qualifiedQueue))
+                    print("--------------------------------------------------------------------------------------------------------------------------------------")
+                    print(string.format("%-4s | %-12s | %-30s | %-10s | %-14s | %-10s | %-9s | %-15s",
+                        "STT", "Loại", "Tên Vật Phẩm", "Giá Bán", "Tổng Kho", "Qty/Slot", "MaxSlots", "Nguồn Giá"))
+                    print("--------------------------------------------------------------------------------------------------------------------------------------")
+                    for idx, item in ipairs(qualifiedQueue) do
+                        local qtyPerSlot = item.amt
+                        if item.targetQty ~= "All" then
+                            qtyPerSlot = math.min(item.amt, tonumber(item.targetQty) or item.amt)
+                        end
+                        qtyPerSlot = math.min(qtyPerSlot, 50000)
+                        local maxSlotsStr = item.isStackable and tostring(item.maxSlots or 1) or "1 (pet)"
+                        local targetQtyStr = item.targetQty == "All" and "All" or tostring(item.targetQty)
+                        print(string.format("%-4d | %-12s | %-30s | %-10s | %-14s | %-10s | %-9s | %-15s",
+                            idx, tostring(item.cat):sub(1, 12), tostring(item.name):sub(1, 30),
+                            formatNumber(item.price),
+                            string.format("%s (quota:%s)", formatNumber(item.amt), targetQtyStr),
+                            formatNumber(qtyPerSlot), maxSlotsStr, tostring(item.priceSource)))
+                    end
+                    print("============================================================================================================\n")
+                else
+                    print(string.format(
+                        "[AUTO SELL] Tick scan: 0 qualify | Scanned=%d | NoPrice=%d | Locked=%d | Cooldown=%d | AlreadyListed=%d | LimitReached=%d | Booth=%d/%d",
+                        scanStats.total, scanStats.noPrice, scanStats.locked,
+                        scanStats.cooldown, scanStats.alreadyListed, scanStats.limitReached,
+                        listedCount, config.MaxSlots or 25
+                    ))
+                end
+                
+                -- Enforce gap tối thiểu 4s giữa Booths_GetInitialState và Booths_CreateListing
+                local lastStateCall = getgenv().PlazaSellLastStateCall
+                if lastStateCall then
+                    local gap = os.time() - lastStateCall
+                    if gap < 4 then
+                        print(string.format("[AUTO SELL] Waiting %ds after GetInitialState before listing...", 4 - gap))
+                        task.wait(4 - gap)
+                    end
+                    getgenv().PlazaSellLastStateCall = nil -- xóa sau khi đã enforce
+                end
+                
+                -- Thực hiện đăng bán lần lượt các item trong Queue
+                local globalCooldownTriggered = false
+                local listedCountBeforeTick = listedCount -- Snapshot trước tick để detect "chưa list được gì"
+                for _, item in ipairs(qualifiedQueue) do
+                    if not getgenv().PlazaSellConfig.Enabled then break end
+                    if listedCount >= (config.MaxSlots or 25) then
+                        print(string.format("[DEBUG] Booth slots filled up (%d/%d). Stopping execution.", listedCount, config.MaxSlots or 25))
+                        break
+                    end
+                    
+                    local remainingInventory = item.amt
+                    local uid = item.uid
+                    local itemName = item.name
+                    local sellPrice = item.price
+                    local limitVal = item.limitVal
+                    local targetQty = item.targetQty
+                    
+                    local slotsUsedForItem = 0
+                    while remainingInventory > 0 and getgenv().PlazaSellConfig.Enabled do
+                        if listedCount >= (config.MaxSlots or 25) then break end
+                        if targetQty ~= "All" and (tonumber(targetQty) or 0) <= 0 then break end
+                        -- Giới hạn số slot cho stackable item (tránh spam slot)
+                        if item.isStackable and slotsUsedForItem >= (item.maxSlots or 1) then break end
+                        
+                        local sellAmt = remainingInventory
+                        if targetQty ~= "All" then
+                            sellAmt = math.min(remainingInventory, tonumber(targetQty) or 1)
+                        end
+                        sellAmt = math.min(sellAmt, 50000)
+                        if sellAmt <= 0 then break end
+                        
+                        local listSuccess, errMsg = Network.Invoke("Booths_CreateListing", uid, sellPrice, sellAmt)
+                        if listSuccess then
+                            print(string.format("[AUTO SELL SUCCESS] Listed: %s x%d for %s Gems (%s)", itemName, sellAmt, formatNumber(sellPrice), item.priceSource))
+                            remainingInventory = remainingInventory - sellAmt
+                            listedCount = listedCount + 1
+                            slotsUsedForItem = slotsUsedForItem + 1
+                            getgenv().PlazaSellSlotCache = listedCount -- Sync cache tick
+                            listedUIDs[uid] = (listedUIDs[uid] or 0) + sellAmt
+                            
+                            if limitVal ~= "All" then
+                                local curLimit = tonumber(limitVal) or 1
+                                local newLimit = math.max(0, curLimit - 1)
+                                config.CustomListingsLimit[itemName] = newLimit
+                                saveConfig()
+                                limitVal = newLimit
+                            end
+                            if limitVal ~= "All" and limitVal <= 0 then break end
+                            
+                            if targetQty ~= "All" then
+                                local curLimit = tonumber(targetQty) or 1
+                                local newLimit = math.max(0, curLimit - sellAmt)
+                                if newLimit <= 0 then
+                                    tickQuotas[itemName] = nil
+                                    config.CustomQuantities[itemName] = "All"
+                                    saveConfig()
+                                    break
+                                else
+                                    tickQuotas[itemName] = newLimit
+                                    config.CustomQuantities[itemName] = newLimit
+                                    saveConfig()
+                                end
+                            end
+                            task.wait(2.5) -- 2.5s giữa các listing (an toàn hơn 2s, rate limit ~17 calls/36s)
+                        else
+                            print(string.format("[AUTO SELL ERROR] Listing failed for %s: %s", itemName, tostring(errMsg)))
+                            local errStr = tostring(errMsg):lower()
+                            if errStr:find("slot") or errStr:find("full") or errStr:find("limit") or errStr:find("no empty") then
+                                listedCount = config.MaxSlots or 25
+                                break
+                            elseif errStr:find("fast") or errStr:find("too") then
+                                -- "too fast" = rate limit tạm thời trong burst → chờ 8s rồi tiếp tục (không set global cooldown)
+                                print(string.format("[AUTO SELL] Rate limit hit after %d listings. Pausing 8s...", listedCount - listedCountBeforeTick))
+                                task.wait(8.0)
+                                break -- kết thúc tick này, tick tiếp thử lại
+                            elseif errStr:find("cooldown") or errStr:find("wait") then
+                                -- "cooldown" = server block dài → chỉ global cooldown nếu chưa list được gì
+                                if listedCount == listedCountBeforeTick then
+                                    -- Backoff: 120 → 240 → 300s max
+                                    local prevDur = getgenv().PlazaSellGlobalCooldownDur or 60
+                                    local nextDur = math.min(prevDur * 2, 300)
+                                    getgenv().PlazaSellGlobalCooldown = os.time()
+                                    getgenv().PlazaSellGlobalCooldownDur = nextDur
+                                    print(string.format("[AUTO SELL] Server cooldown! Waiting %ds (backoff)...", nextDur))
+                                    globalCooldownTriggered = true
+                                    break
+                                else
+                                    -- Đã list được item khác → per-UID cache
+                                    getgenv().PlazaSellItemCooldowns[uid] = os.time()
+                                    print(string.format("[AUTO SELL] Per-item cooldown for %s.", itemName))
+                                    task.wait(3.0)
+                                end
+                                break
+                            end
+                            getgenv().PlazaSellItemCooldowns[uid] = os.time()
+                            break
+                        end
+                    end
+                    if globalCooldownTriggered then break end
+                end
+            end)
+        end
+    end
+end
+
+task.spawn(runAutoSellProcess)
+
+-- 10. THÔNG BÁO HOÀN TẤT
+showNotification("Giao Diện Hoạt Động", "Click nút giỏ hàng hoặc nhấn Left Control để ẩn/hiện.")
