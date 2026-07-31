@@ -1,3 +1,4 @@
+-- cm gay
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -510,20 +511,25 @@ Network.Fired("Booths: Add History"):Connect(function(saleLog)
         
         print(string.format("[WEBHOOK DEBUG] Sold: %s x%d for %s Gems", itemName, amount, formatNumber(price)))
         
-        -- Cập nhật số lượng quota còn lại khi có giao dịch bán
-        -- CHỈ cập nhật CustomQuantities, KHÔNG bao giờ xóa CustomPrices (cấu hình giá vĩnh viễn)
+        -- Cập nhật đếm số lượng quota & số lần treo khi có BÁN THÀNH CÔNG
+        -- Cho phép treo tiếp/refill liên tục, đếm đủ xx lần/cái bán thành công (về 0) thì mới dừng!
         local config = getgenv().PlazaSellConfig
         if config.CustomQuantities and config.CustomQuantities[itemName] then
             local qty = config.CustomQuantities[itemName]
             if type(qty) == "number" or tonumber(qty) then
                 local num = tonumber(qty)
                 local newQty = math.max(0, num - amount)
-                if newQty <= 0 then
-                    -- Đã bán đủ số lượng quota → reset về "All" để lần treo tiếp theo tự động dùng hết
-                    config.CustomQuantities[itemName] = "All"
-                else
-                    config.CustomQuantities[itemName] = newQty
-                end
+                config.CustomQuantities[itemName] = (newQty <= 0) and 0 or newQty
+                saveConfig()
+            end
+        end
+        
+        if config.CustomListingsLimit and config.CustomListingsLimit[itemName] then
+            local limit = config.CustomListingsLimit[itemName]
+            if type(limit) == "number" or tonumber(limit) then
+                local num = tonumber(limit)
+                local newLimit = math.max(0, num - 1)
+                config.CustomListingsLimit[itemName] = (newLimit <= 0) and 0 or newLimit
                 saveConfig()
             end
         end
@@ -3351,30 +3357,6 @@ local function runAutoSellProcess()
                             slotsUsedForItem = slotsUsedForItem + 1
                             getgenv().PlazaSellSlotCache = listedCount -- Sync cache tick
                             listedUIDs[uid] = (listedUIDs[uid] or 0) + sellAmt
-                            
-                            if limitVal ~= "All" then
-                                local curLimit = tonumber(limitVal) or 1
-                                local newLimit = math.max(0, curLimit - 1)
-                                config.CustomListingsLimit[itemName] = newLimit
-                                saveConfig()
-                                limitVal = newLimit
-                            end
-                            if limitVal ~= "All" and limitVal <= 0 then break end
-                            
-                            if targetQty ~= "All" then
-                                local curLimit = tonumber(targetQty) or 1
-                                local newLimit = math.max(0, curLimit - sellAmt)
-                                if newLimit <= 0 then
-                                    tickQuotas[itemName] = nil
-                                    config.CustomQuantities[itemName] = "All"
-                                    saveConfig()
-                                    break
-                                else
-                                    tickQuotas[itemName] = newLimit
-                                    config.CustomQuantities[itemName] = newLimit
-                                    saveConfig()
-                                end
-                            end
                             task.wait(2.5) -- 2.5s giữa các listing (an toàn hơn 2s, rate limit ~17 calls/36s)
                         else
                             print(string.format("[AUTO SELL ERROR] Listing failed for %s: %s", itemName, tostring(errMsg)))
