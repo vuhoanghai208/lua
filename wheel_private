@@ -1,0 +1,2011 @@
+-- ============================================================================
+-- PET SIMULATOR 99 - TOTAL KEY HUB PRO (CRYSTAL KEY CASTLE BURST ENGINE)
+-- File: e:\all_game_rbl\p99\key\total_key.lua
+-- Author: Antigravity AI & Hoang Hai Workspace
+-- Features:
+--   1. All Key Auto Combine (Crystal, Tech, Secret, Void, Fantasy, MVP)
+--   2. Crystal Key Castle (CKC) Infinite Wheel Ultra-Burst Auto-Farm Engine
+--   3. Customizable RAM Reset & Server Hop System with Direct Unit Input (s / m / h)
+--   4. Non-Blocking Async Multi-Thread Burst Engine
+--   5. Professional Dark Sidebar Hub UI with Live Stats & Config Persistence
+-- ============================================================================
+
+local scriptStartTime = os.clock()
+
+if not game:IsLoaded() then 
+    print("⏳ [KEY] Waiting for Roblox Engine to load...")
+    game.Loaded:Wait() 
+end
+local robloxLoadTime = os.clock()
+print(string.format("✅ [KEY] Roblox Engine loaded! (Took: %.2fs)", robloxLoadTime - scriptStartTime))
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local VirtualUser = game:GetService("VirtualUser")
+local HttpService = game:GetService("HttpService")
+
+local lp = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+
+-- Wait for Character & HumanoidRootPart
+local function WaitCharacter()
+    local char = lp.Character or lp.CharacterAdded:Wait()
+    while not (char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChildOfClass("Humanoid")) do
+        task.wait(0.2)
+        char = lp.Character or lp.CharacterAdded:Wait()
+    end
+    return char
+end
+WaitCharacter()
+local charLoadTime = os.clock()
+print(string.format("🧍 [KEY] Player Character spawned! (Took: %.2fs from Roblox load)", charLoadTime - robloxLoadTime))
+
+-- Wait for Library & Save Data readiness
+print("⏳ [KEY] Waiting for PS99 Game Library & Save Data...")
+repeat
+    task.wait(0.2)
+until ReplicatedStorage:FindFirstChild("Library")
+    and ReplicatedStorage.Library:FindFirstChild("Client")
+    and ReplicatedStorage.Library.Client:FindFirstChild("Save")
+
+local reqSave = require(ReplicatedStorage.Library.Client.Save)
+repeat
+    task.wait(0.2)
+until reqSave.Get() ~= nil
+
+local gameLoadTime = os.clock()
+print(string.format("💾 [KEY] PS99 Game Data loaded! (Took: %.2fs from Char load)", gameLoadTime - charLoadTime))
+print(string.format("🚀 [KEY] TOTAL INITIALIZATION TIME: %.2fs", gameLoadTime - scriptStartTime))
+
+
+-- Low Graphics & Anti-AFK Optimization
+pcall(function()
+    settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Disabled
+end)
+
+-- Anti-AFK Connections
+pcall(function()
+    if getconnections then
+        for _, conn in ipairs(getconnections(lp.Idled)) do
+            if conn.Disable then conn:Disable() elseif conn.Disconnect then conn:Disconnect() end
+        end
+    end
+end)
+
+pcall(function()
+    lp.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        task.wait(0.2)
+        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+    end)
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(300)
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end
+end)
+
+-- Network Setup
+local Network = require(ReplicatedStorage.Library.Client.Network)
+
+-- Bypass PS99 Internal Idle Tracking & Server Closing
+pcall(function()
+    local PlayerScripts = lp.PlayerScripts:WaitForChild("Scripts", 5)
+    if PlayerScripts then
+        local Core = PlayerScripts:FindFirstChild("Core")
+        if Core then
+            if Core:FindFirstChild("Server Closing") then Core["Server Closing"].Enabled = false end
+            if Core:FindFirstChild("Idle Tracking") then Core["Idle Tracking"].Enabled = false end
+        end
+    end
+end)
+
+-- Time Helper Functions (Seconds / Minutes / Hours Parsing)
+local function ParseTimeToSeconds(str)
+    if type(str) == "number" then return math.clamp(math.floor(str), 5, 86400) end
+    if type(str) ~= "string" then return 70 end
+    local clean = str:lower():gsub("%s+", "")
+    local num, unit = clean:match("^([%d%.]+)([smh]?)$")
+    if num then
+        local val = tonumber(num) or 70
+        if unit == "m" then
+            val = val * 60
+        elseif unit == "h" then
+            val = val * 3600
+        end
+        return math.clamp(math.floor(val), 5, 86400)
+    end
+    return math.clamp(math.floor(tonumber(clean) or 70), 5, 86400)
+end
+
+local function FormatTimeDisplay(seconds)
+    seconds = math.max(0, seconds or 0)
+    if seconds >= 3600 then
+        local h = seconds / 3600
+        return (h % 1 == 0) and string.format("%dh", h) or string.format("%.1fh", h)
+    elseif seconds >= 60 then
+        local m = seconds / 60
+        return (m % 1 == 0) and string.format("%dm", m) or string.format("%.1fm", m)
+    else
+        return string.format("%ds", seconds)
+    end
+end
+
+-- Configuration & Storage (Unique Per Account UserId)
+local ConfigFile = "p99_totalkey_" .. tostring(lp.UserId or 0) .. ".json"
+local Config = {
+    FarmEnabled = false,
+    CombineEnabled = false,
+    CombineBatch = 20,
+    CombineDelay = 0.05,
+    ThreadCount = 50, -- Cho phép lên tới 50+ luồng song song (Spam hàng đợi)
+    BurstDelay = 0.02,
+    AutoRAMLimit = 10000, -- Giới hạn RAM (MB). Mặc định 10000MB (Tự động Rejoin giải phóng 100% RAM & CPU)
+    AutoHopEnabled = false,
+    HopInterval = 70,
+    HopMode = "Rejoin", -- "Rejoin" (Same Server) or "ServerHop" (New Server)
+    TargetPlaceId = 8737871904,
+    AutoCombineAfterFarm = false,
+    AutoStartFarm = false,
+    SelectedKeys = {
+        Crystal = true,
+        Tech = true,
+        Secret = true,
+        Void = true,
+        Fantasy = true,
+        MVP = true
+    }
+}
+
+local function SaveConfig()
+    pcall(function()
+        local wf = writefile or (syn and syn.writefile)
+        if wf then
+            wf(ConfigFile, HttpService:JSONEncode(Config))
+            print("💾 [CONFIG] Saved to " .. ConfigFile)
+        end
+    end)
+end
+
+local function LoadConfig()
+    pcall(function()
+        local rf = readfile or (syn and syn.readfile)
+        local isf = isfile or (syn and syn.isfile)
+        if rf and isf and isf(ConfigFile) then
+            local raw = rf(ConfigFile)
+            if raw and #raw > 0 then
+                local data = HttpService:JSONDecode(raw)
+                if type(data) == "table" then
+                    for k, v in pairs(data) do
+                        -- SelectedKeys: merge từng key, không replace cả table
+                        if k == "SelectedKeys" and type(v) == "table" then
+                            for sk, sv in pairs(v) do
+                                Config.SelectedKeys[sk] = sv
+                            end
+                        elseif Config[k] ~= nil and k ~= "SelectedKeys" and k ~= "FarmEnabled" and k ~= "CombineEnabled" then
+                            Config[k] = v
+                        end
+                    end
+                    -- Debug: in SelectedKeys sau load
+                    local sel = {}
+                    for name, enabled in pairs(Config.SelectedKeys) do
+                        if enabled then table.insert(sel, name) end
+                    end
+                    print("📂 [CONFIG] Loaded from " .. ConfigFile)
+                    print("[KEY] SelectedKeys enabled: " .. (#sel > 0 and table.concat(sel, ", ") or "NONE"))
+                end
+            end
+        end
+    end)
+end
+LoadConfig()
+
+
+local Stats = {
+    Combined = 0,
+    Spins = 0,
+    ConfirmedSpins = 0,
+    CombineErrors = 0,
+    FarmErrors = 0,
+    CombineStartTime = os.clock(),
+    FarmStartTime = os.clock(),
+    HopStartTime = os.clock()
+}
+
+-- KEY_TYPES: ticket = item têu tốn để spin wheel (nếu có). nil = wheel tự quảný cost
+local KEY_TYPES = {
+    { name = "Crystal", upper = "Crystal Key Upper Half", lower = "Crystal Key Lower Half", full = "Crystal Key", remote = "CrystalKey_Combine", wheel = "CrystalKeyWheel", room = "Crystal Key Castle", ticket = "Secret Key" },
+    { name = "Tech",    upper = "Tech Key Upper Half",    lower = "Tech Key Lower Half",    full = "Tech Key",    remote = "TechKey_Combine",    wheel = "TechKeyWheel",    room = "Tech Key Castle" },
+    { name = "Secret",  upper = "Secret Key Upper Half",  lower = "Secret Key Lower Half",  full = "Secret Key",  remote = "SecretKey_Combine",  wheel = "SecretKeyWheel",  room = "Secret Room" },
+    { name = "Void",    upper = "Void Key Upper Half",    lower = "Void Key Lower Half",    full = "Void Key",    remote = "VoidKey_Combine",    wheel = "VoidKeyWheel",    room = "Void Wheel" },
+    { name = "Fantasy", upper = "Fantasy Key Upper Half", lower = "Fantasy Key Lower Half", full = "Fantasy Key", remote = "FantasyKey_Combine", wheel = "FantasyKeyWheel", room = "Fantasy Wheel" },
+    { name = "MVP",     upper = "MVP Key Upper Half",     lower = "MVP Key Lower Half",     full = "MVP Key",     remote = "MVPKey_Combine",     wheel = "MVPKeyWheel",     room = "MVP Wheel" }
+}
+
+-- Scanner Helper for Inventory Key Counts
+local function GetInventoryKeyCounts()
+    local counts = {}
+    for _, kt in ipairs(KEY_TYPES) do
+        counts[kt.name] = { upper = 0, lower = 0, full = 0 }
+    end
+
+    local ok, err = pcall(function()
+        if not reqSave then reqSave = require(ReplicatedStorage.Library.Client.Save) end
+        local data = reqSave.Get(lp) or reqSave.Get()
+        if not data then
+            warn("[KEY] reqSave.Get() = nil — save not ready")
+            return
+        end
+        if not data.Inventory then
+            warn("[KEY] data.Inventory = nil")
+            return
+        end
+        local function scan(obj)
+            if type(obj) ~= "table" then return end
+            for _, v in pairs(obj) do
+                if type(v) == "table" then
+                    local id = v.id
+                    local amount = v.am or v._am or 1
+                    if id then
+                        for _, kt in ipairs(KEY_TYPES) do
+                            if id == kt.upper then
+                                counts[kt.name].upper = counts[kt.name].upper + amount
+                            elseif id == kt.lower then
+                                counts[kt.name].lower = counts[kt.name].lower + amount
+                            elseif id == kt.full then
+                                counts[kt.name].full = counts[kt.name].full + amount
+                            end
+                        end
+                    end
+                    scan(v)
+                end
+            end
+        end
+        scan(data.Inventory)
+    end)
+    if not ok then
+        warn("[KEY] GetInventoryKeyCounts error: " .. tostring(err))
+    end
+    return counts
+end
+
+-- Dynamic Active Key Finder
+-- Nếu kt có `ticket`, phải có ticket đó trong inventory mới được chọn
+local _lastActiveName = nil
+local function GetActiveFarmKey(counts)
+    if not counts then counts = GetInventoryKeyCounts() end
+    for _, kt in ipairs(KEY_TYPES) do
+        if Config.SelectedKeys[kt.name] ~= false then
+            local c = counts[kt.name] or { upper = 0, lower = 0, full = 0 }
+            
+            -- Check ticket count if wheel uses a ticket (e.g. Secret Key for Crystal Wheel)
+            local ticketCount = 0
+            if kt.ticket then
+                for _, tkt in ipairs(KEY_TYPES) do
+                    if tkt.full == kt.ticket then
+                        local tc = counts[tkt.name]
+                        ticketCount = tc and tc.full or 0
+                        break
+                    end
+                end
+            end
+
+            -- Có thể farm nếu có Full Key, hoặc có Halves ghép được, hoặc có Ticket Key (Secret Key)
+            local hasKey = (c.full > 0) or (math.min(c.upper, c.lower) > 0) or (ticketCount > 0)
+
+            if hasKey then
+                if _lastActiveName ~= kt.name then
+                    _lastActiveName = kt.name
+                    local ticketInfo = kt.ticket and string.format(" | ticket=%s(%d)", kt.ticket, ticketCount) or ""
+                    print(string.format("[KEY] Active → %s (F:%d U:%d L:%d%s)",
+                        kt.name, c.full, c.upper, c.lower, ticketInfo))
+                end
+                return kt
+            end
+        end
+    end
+    if _lastActiveName ~= nil then
+        warn("[KEY] No usable key found — all selected keys exhausted")
+        _lastActiveName = nil
+    end
+    return nil
+end
+
+-- (GetInventoryKeyCounts already defined above)
+
+-- Server Hop / Rejoin Function
+local isTeleporting = false
+local function FastServerHop()
+    if isTeleporting then return end
+    isTeleporting = true
+    Config.FarmEnabled = false
+    Config.CombineEnabled = false
+
+    local targetPlace = game.PlaceId -- Use active game PlaceId to prevent Unauthorized errors
+    local modeStr = (Config.HopMode == "ServerHop") and "SERVER HOP (NEW SERVER)" or "REJOIN (SAME PLACE)"
+    print("🚀 [TOTAL-KEY] EXECUTING " .. modeStr .. " FOR PLACE: " .. tostring(targetPlace))
+
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
+    task.wait(0.5)
+
+    if Config.HopMode == "ServerHop" then
+        local ok, _ = pcall(function()
+            local req = (syn and syn.request) or (http and http.request) or http_request or request
+            if req then
+                local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100", targetPlace)
+                local res = req({ Url = url, Method = "GET" })
+                if res and res.Body then
+                    local data = HttpService:JSONDecode(res.Body)
+                    if data and data.data then
+                        local validServers = {}
+                        for _, srv in ipairs(data.data) do
+                            if srv.playing < srv.maxPlayers and srv.id ~= game.JobId then
+                                table.insert(validServers, srv.id)
+                            end
+                        end
+                        if #validServers > 0 then
+                            local selectedJobId = validServers[math.random(1, #validServers)]
+                            TeleportService:TeleportToPlaceInstance(targetPlace, selectedJobId, lp)
+                        end
+                    end
+                end
+            end
+            TeleportService:Teleport(targetPlace, lp)
+        end)
+        if not ok then
+            pcall(function() TeleportService:Teleport(targetPlace, lp) end)
+        end
+    else
+        pcall(function() TeleportService:Teleport(targetPlace, lp) end)
+    end
+
+    task.delay(5, function()
+        isTeleporting = false
+        pcall(function() TeleportService:Teleport(targetPlace, lp) end)
+    end)
+end
+
+-- Safe Void Anti-Lag Optimizer (Wipes 100% Map 3D Clutter, protects Pets & __THINGS to eliminate console errors)
+local function OptimizeMapAndAssets()
+    local count = 0
+
+    -- 1. Clear Terrain Voxels
+    pcall(function()
+        if workspace:FindFirstChildOfClass("Terrain") then
+            workspace:FindFirstChildOfClass("Terrain"):Clear()
+        end
+    end)
+
+    -- 2. Clean Lighting & Atmosphere
+    pcall(function()
+        local Lighting = game:GetService("Lighting")
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 0
+        for _, child in ipairs(Lighting:GetChildren()) do
+            if child:IsA("PostEffect") or child:IsA("Atmosphere") or child:IsA("Sky") or child:IsA("BloomEffect") or child:IsA("BlurEffect") then
+                pcall(function() child:Destroy(); count = count + 1 end)
+            end
+        end
+    end)
+
+    -- 3. Wipe Map 3D Mesh Clutter (Safely protects Pets, __THINGS, Debris from PetRendering errors)
+    pcall(function()
+        local safeBlacklist = {
+            ["Camera"] = true,
+            ["Terrain"] = true,
+            ["Pets"] = true,
+            ["__THINGS"] = true,
+            ["__DEBRIS"] = true,
+            ["Debris"] = true,
+            ["VHH_VoidPlate"] = true
+        }
+
+        for _, item in ipairs(workspace:GetChildren()) do
+            if not safeBlacklist[item.Name] and item ~= workspace.CurrentCamera and not Players:GetPlayerFromCharacter(item) and item ~= lp.Character then
+                pcall(function()
+                    item:Destroy()
+                    count = count + 1
+                end)
+            end
+        end
+    end)
+
+    -- 3.5. Potato Mode (Xóa Textures, Decals, Particles & Tắt Shadows cho các Object còn lại)
+    pcall(function()
+        for _, desc in ipairs(workspace:GetDescendants()) do
+            if desc:IsA("BasePart") then
+                desc.CastShadow = false
+                desc.Material = Enum.Material.SmoothPlastic
+            elseif desc:IsA("Decal") or desc:IsA("Texture") then
+                desc:Destroy()
+            elseif desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") or desc:IsA("Fire") or desc:IsA("Smoke") or desc:IsA("Sparkles") then
+                desc.Enabled = false
+            end
+        end
+    end)
+
+    -- 4. Create Single Smooth Dark Baseplate directly under Player for zero-lag standing
+    pcall(function()
+        local char = lp.Character or lp.CharacterAdded:Wait()
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local plate = workspace:FindFirstChild("VHH_VoidPlate")
+            if not plate then
+                plate = Instance.new("Part")
+                plate.Name = "VHH_VoidPlate"
+                plate.Size = Vector3.new(120, 2, 120)
+                plate.Position = hrp.Position - Vector3.new(0, 3, 0)
+                plate.Anchored = true
+                plate.Material = Enum.Material.SmoothPlastic
+                plate.Color = Color3.fromRGB(30, 32, 45)
+                plate.Parent = workspace
+            else
+                plate.Position = hrp.Position - Vector3.new(0, 3, 0)
+            end
+        end
+    end)
+
+    pcall(function() collectgarbage("collect") end)
+    print("🚀 [SAFE VOID MODE] Successfully wiped " .. tostring(count) .. " map objects! Clean console & zero 3D lag.")
+end
+
+-- Tự động dọn map (Potato Mode) ngay khi vừa load xong script
+task.spawn(function()
+    print("🧹 [KEY] Auto-applying Potato Mode & wiping map...")
+    OptimizeMapAndAssets()
+end)
+
+
+-- Periodic Garbage Collector & Auto RAM Limit Purge (10000MB Default)
+task.spawn(function()
+    while true do
+        task.wait(5)
+        pcall(function()
+            collectgarbage("collect")
+            local totalRamMB = math.floor(game:GetService("Stats"):GetTotalMemoryUsageMb())
+            local limitMB = tonumber(Config.AutoRAMLimit) or 10000
+            if totalRamMB >= limitMB then
+                print(string.format("⚠️ [SYSTEM] Client Memory Usage: %d MB reached limit %d MB! Purging RAM & CPU via Rejoin...", totalRamMB, limitMB))
+                FastServerHop()
+                task.wait(10)
+            end
+        end)
+    end
+end)
+
+
+-- ============================================================================
+-- UI CREATION (DARK SIDEBAR HUB DESIGN)
+-- ============================================================================
+local guiName = "TotalKeyHubUI"
+local function ClearOldGui()
+    local ok, cg = pcall(game.GetService, game, "CoreGui")
+    if ok and cg and cg:FindFirstChild(guiName) then cg[guiName]:Destroy() end
+    if lp:FindFirstChild("PlayerGui") and lp.PlayerGui:FindFirstChild(guiName) then lp.PlayerGui[guiName]:Destroy() end
+end
+ClearOldGui()
+
+local parent = CoreGui:FindFirstChildOfClass("ScreenGui") and CoreGui or (lp:FindFirstChild("PlayerGui") or CoreGui)
+local sg = Instance.new("ScreenGui")
+sg.Name = guiName
+sg.DisplayOrder = 9999
+sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true
+sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+sg.Parent = parent
+
+-- Color Theme
+local C_BG       = Color3.fromRGB(15, 17, 26)
+local C_HEADER   = Color3.fromRGB(22, 25, 40)
+local C_SIDEBAR  = Color3.fromRGB(18, 20, 32)
+local C_PANEL    = Color3.fromRGB(24, 28, 44)
+local C_CARD     = Color3.fromRGB(29, 34, 54)
+local C_BORDER   = Color3.fromRGB(48, 54, 82)
+local C_PURPLE   = Color3.fromRGB(168, 85, 247)
+local C_GREEN    = Color3.fromRGB(52, 211, 153)
+local C_RED      = Color3.fromRGB(248, 113, 113)
+local C_YELLOW   = Color3.fromRGB(251, 191, 36)
+local C_CYAN     = Color3.fromRGB(56, 189, 248)
+local C_TEXT     = Color3.fromRGB(226, 232, 240)
+local C_DIM      = Color3.fromRGB(148, 163, 184)
+local C_WHITE    = Color3.new(1, 1, 1)
+
+local WIN_W, WIN_H = 560, 440
+local HEADER_H = 40
+local SIDEBAR_W = 52
+
+-- Main Window Frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainWindow"
+mainFrame.Size = UDim2.new(0, WIN_W, 0, WIN_H)
+mainFrame.Position = UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2)
+mainFrame.BackgroundColor3 = C_BG
+mainFrame.BorderSizePixel = 0
+mainFrame.ZIndex = 1000
+mainFrame.Parent = sg
+do
+    Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
+    local us = Instance.new("UIStroke", mainFrame)
+    us.Color = C_PURPLE
+    us.Thickness = 1.5
+    us.Transparency = 0.3
+end
+
+-- Draggable Logic
+do
+    local dragging, dragInput, dragStart, startPos
+    mainFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = mainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    mainFrame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+-- Header Bar
+local header = Instance.new("Frame", mainFrame)
+header.Size = UDim2.new(1, 0, 0, HEADER_H)
+header.BackgroundColor3 = C_HEADER
+header.BorderSizePixel = 0
+header.ZIndex = 1010
+do
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 12)
+    local line = Instance.new("Frame", header)
+    line.Size = UDim2.new(1, 0, 0, 1)
+    line.Position = UDim2.new(0, 0, 1, -1)
+    line.BackgroundColor3 = C_BORDER
+    line.BorderSizePixel = 0
+end
+
+local title = Instance.new("TextLabel", header)
+title.Size = UDim2.new(0, 240, 1, 0)
+title.Position = UDim2.new(0, 14, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "⚡ AUTO KEY"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 13
+title.TextColor3 = C_PURPLE
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.ZIndex = 1012
+
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.new(0, 26, 0, 26)
+closeBtn.Position = UDim2.new(1, -32, 0.5, -13)
+closeBtn.BackgroundColor3 = Color3.fromRGB(60, 25, 35)
+closeBtn.Text = "✕"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.TextColor3 = C_RED
+closeBtn.ZIndex = 1012
+do Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6) end
+
+-- Floating Open Button (Appears when UI is closed)
+local openHubBtn = Instance.new("TextButton", sg)
+openHubBtn.Name = "OpenHubButton"
+openHubBtn.Size = UDim2.new(0, 110, 0, 32)
+openHubBtn.Position = UDim2.new(0, 15, 0.5, -16)
+openHubBtn.BackgroundColor3 = C_HEADER
+openHubBtn.Text = "⚡ KEY HUB"
+openHubBtn.Font = Enum.Font.GothamBold
+openHubBtn.TextSize = 11
+openHubBtn.TextColor3 = C_PURPLE
+openHubBtn.Visible = false
+openHubBtn.ZIndex = 9999
+do
+    Instance.new("UICorner", openHubBtn).CornerRadius = UDim.new(0, 8)
+    local us = Instance.new("UIStroke", openHubBtn)
+    us.Color = C_PURPLE
+    us.Thickness = 1.5
+    us.Transparency = 0.3
+end
+
+-- Draggable Open Button Logic
+do
+    local oDragging, oDragInput, oDragStart, oStartPos
+    openHubBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            oDragging = true; oDragStart = input.Position; oStartPos = openHubBtn.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then oDragging = false end
+            end)
+        end
+    end)
+    openHubBtn.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            oDragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == oDragInput and oDragging then
+            local delta = input.Position - oDragStart
+            openHubBtn.Position = UDim2.new(oStartPos.X.Scale, oStartPos.X.Offset + delta.X, oStartPos.Y.Scale, oStartPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+local function ToggleGuiVisibility(visible)
+    local targetVis = (visible ~= nil) and visible or not mainFrame.Visible
+    mainFrame.Visible = targetVis
+    openHubBtn.Visible = not targetVis
+end
+
+closeBtn.MouseButton1Click:Connect(function()
+    ToggleGuiVisibility(false)
+end)
+
+openHubBtn.MouseButton1Click:Connect(function()
+    ToggleGuiVisibility(true)
+end)
+
+-- Hotkey Toggle (RightControl or RightShift)
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if not gpe and (input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.RightShift) then
+        ToggleGuiVisibility()
+    end
+end)
+
+
+local minBtn = Instance.new("TextButton", header)
+minBtn.Size = UDim2.new(0, 26, 0, 26)
+minBtn.Position = UDim2.new(1, -64, 0.5, -13)
+minBtn.BackgroundColor3 = Color3.fromRGB(35, 30, 55)
+minBtn.Text = "-"
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 15
+minBtn.TextColor3 = C_PURPLE
+minBtn.ZIndex = 1012
+do Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6) end
+
+local saveBtn = Instance.new("TextButton", header)
+saveBtn.Size = UDim2.new(0, 65, 0, 26)
+saveBtn.Position = UDim2.new(1, -135, 0.5, -13)
+saveBtn.BackgroundColor3 = Color3.fromRGB(30, 45, 60)
+saveBtn.Text = "💾 SAVE"
+saveBtn.Font = Enum.Font.GothamBold
+saveBtn.TextSize = 10
+saveBtn.TextColor3 = C_CYAN
+saveBtn.ZIndex = 1012
+do Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6) end
+
+saveBtn.MouseButton1Click:Connect(function()
+    SaveConfig()
+    saveBtn.Text = "✓ SAVED!"
+    saveBtn.TextColor3 = C_GREEN
+    task.wait(1.2)
+    saveBtn.Text = "💾 SAVE"
+    saveBtn.TextColor3 = C_CYAN
+end)
+
+-- Sidebar Frame
+local sidebar = Instance.new("Frame", mainFrame)
+sidebar.Size = UDim2.new(0, SIDEBAR_W, 1, -HEADER_H)
+sidebar.Position = UDim2.new(0, 0, 0, HEADER_H)
+sidebar.BackgroundColor3 = C_SIDEBAR
+sidebar.BorderSizePixel = 0
+sidebar.ZIndex = 1005
+do
+    local line = Instance.new("Frame", sidebar)
+    line.Size = UDim2.new(0, 1, 1, 0)
+    line.Position = UDim2.new(1, -1, 0, 0)
+    line.BackgroundColor3 = C_BORDER
+    line.BorderSizePixel = 0
+end
+
+-- Content Container
+local contentFrame = Instance.new("Frame", mainFrame)
+contentFrame.Size = UDim2.new(1, -SIDEBAR_W, 1, -HEADER_H)
+contentFrame.Position = UDim2.new(0, SIDEBAR_W, 0, HEADER_H)
+contentFrame.BackgroundTransparency = 1
+contentFrame.ZIndex = 1000
+
+-- Tab Pages Mapping
+local pages = {}
+local function CreatePage(id)
+    local page = Instance.new("Frame", contentFrame)
+    page.Name = id
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.Visible = (id == "FARM")
+    pages[id] = page
+    return page
+end
+
+local pageFarm    = CreatePage("FARM")
+local pageCombine = CreatePage("COMBINE")
+local pageDash    = CreatePage("DASHBOARD")
+local pageConfig  = CreatePage("CONFIG")
+
+-- Sidebar Tabs Definition
+local navDefs = {
+    { id = "FARM",      icon = "🔥", label = "Farm" },
+    { id = "COMBINE",   icon = "⚡", label = "Keys" },
+    { id = "DASHBOARD", icon = "📊", label = "Stats" },
+    { id = "CONFIG",    icon = "⚙", label = "Config" },
+}
+
+local navButtons = {}
+local activeNav = "FARM"
+
+local function SwitchTab(id)
+    activeNav = id
+    for tId, pFrame in pairs(pages) do
+        pFrame.Visible = (tId == id)
+        local btn = navButtons[tId]
+        if btn then
+            if tId == id then
+                btn.BackgroundColor3 = C_PURPLE
+                btn:FindFirstChild("Ic").TextColor3 = C_WHITE
+                btn:FindFirstChild("Lb").TextColor3 = C_WHITE
+            else
+                btn.BackgroundColor3 = C_SIDEBAR
+                btn:FindFirstChild("Ic").TextColor3 = C_DIM
+                btn:FindFirstChild("Lb").TextColor3 = C_DIM
+            end
+        end
+    end
+end
+
+for i, nav in ipairs(navDefs) do
+    local btn = Instance.new("TextButton", sidebar)
+    btn.Size = UDim2.new(0, 42, 0, 48)
+    btn.Position = UDim2.new(0.5, -21, 0, (i - 1) * 54 + 12)
+    btn.BackgroundColor3 = (nav.id == "FARM") and C_PURPLE or C_SIDEBAR
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.ZIndex = 1006
+    do Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8) end
+
+    local ic = Instance.new("TextLabel", btn)
+    ic.Name = "Ic"
+    ic.Size = UDim2.new(1, 0, 0, 24)
+    ic.Position = UDim2.new(0, 0, 0, 4)
+    ic.BackgroundTransparency = 1
+    ic.Text = nav.icon
+    ic.Font = Enum.Font.GothamBold
+    ic.TextSize = 16
+    ic.TextColor3 = (nav.id == "FARM") and C_WHITE or C_DIM
+    ic.ZIndex = 1007
+
+    local lb = Instance.new("TextLabel", btn)
+    lb.Name = "Lb"
+    lb.Size = UDim2.new(1, 0, 0, 14)
+    lb.Position = UDim2.new(0, 0, 0, 28)
+    lb.BackgroundTransparency = 1
+    lb.Text = nav.label
+    lb.Font = Enum.Font.Gotham
+    lb.TextSize = 8
+    lb.TextColor3 = (nav.id == "FARM") and C_WHITE or C_DIM
+    lb.ZIndex = 1007
+
+    navButtons[nav.id] = btn
+    btn.MouseButton1Click:Connect(function() SwitchTab(nav.id) end)
+end
+
+-- Minimize Action
+local isOpen = true
+minBtn.MouseButton1Click:Connect(function()
+    isOpen = not isOpen
+    sidebar.Visible = isOpen
+    contentFrame.Visible = isOpen
+    local targetSize = isOpen and UDim2.new(0, WIN_W, 0, WIN_H) or UDim2.new(0, WIN_W, 0, HEADER_H)
+    TweenService:Create(mainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Size = targetSize }):Play()
+    minBtn.Text = isOpen and "-" or "+"
+end)
+
+
+-- ============================================================================
+-- PAGE 1: BURST FARM INTERFACE (CRYSTAL KEY CASTLE WHEEL ENGINE)
+-- ============================================================================
+
+-- Main Farm Status Panel
+local farmPanel = Instance.new("Frame", pageFarm)
+farmPanel.Size = UDim2.new(1, -24, 0, 326)
+farmPanel.Position = UDim2.new(0, 12, 0, 10)
+farmPanel.BackgroundColor3 = C_PANEL
+farmPanel.BorderSizePixel = 0
+do
+    Instance.new("UICorner", farmPanel).CornerRadius = UDim.new(0, 8)
+    local us = Instance.new("UIStroke", farmPanel)
+    us.Color = C_BORDER; us.Thickness = 1
+end
+
+local function MakeFarmStatRow(y, titleText, initialVal)
+    local titleLbl = Instance.new("TextLabel", farmPanel)
+    titleLbl.Size = UDim2.new(0, 140, 0, 18)
+    titleLbl.Position = UDim2.new(0, 12, 0, y)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text = titleText
+    titleLbl.Font = Enum.Font.GothamBold
+    titleLbl.TextSize = 10
+    titleLbl.TextColor3 = C_DIM
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local valLbl = Instance.new("TextLabel", farmPanel)
+    valLbl.Size = UDim2.new(1, -160, 0, 18)
+    valLbl.Position = UDim2.new(0, 152, 0, y)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = initialVal
+    valLbl.Font = Enum.Font.Code
+    valLbl.TextSize = 10
+    valLbl.TextColor3 = C_TEXT
+    valLbl.TextXAlignment = Enum.TextXAlignment.Left
+    return valLbl
+end
+
+local farmStatusLbl     = MakeFarmStatRow(8,   "⚡ Farm Status:",    "Idle")
+local farmSpinsLbl      = MakeFarmStatRow(28,  "🗝 Total Key Opens:", "0 Confirmed | 0 Attempts")
+local farmRateLbl       = MakeFarmStatRow(48,  "📊 Speed Rate:",     "0.0/s | 0/min | ~0/day")
+local farmKeysLbl       = MakeFarmStatRow(68,  "🔑 Crystal Keys Left:", "-")
+local farmSecretKeysLbl = MakeFarmStatRow(88,  "🔐 Secret Keys Left:",  "-")
+local farmUsedLbl       = MakeFarmStatRow(108, "📉 Used / Left:",    "Real: 0 | Fired: 0 | Left: 0")
+local farmTimeLbl       = MakeFarmStatRow(128, "⏱ Elapsed Time:",   "0m 0s")
+local farmHopTimerLbl   = MakeFarmStatRow(148, "🚀 Reset / Hop:",    "Disabled")
+
+-- Separator Line
+local sep = Instance.new("Frame", farmPanel)
+sep.Size = UDim2.new(1, -24, 0, 1)
+sep.Position = UDim2.new(0, 12, 0, 168)
+sep.BackgroundColor3 = C_BORDER
+sep.BorderSizePixel = 0
+
+-- RAM Reset & Server Hop Control Section
+local hopHeader = Instance.new("TextLabel", farmPanel)
+hopHeader.Size = UDim2.new(1, -24, 0, 18)
+hopHeader.Position = UDim2.new(0, 12, 0, 174)
+hopHeader.BackgroundTransparency = 1
+hopHeader.Text = "⚙ RAM RESET & SERVER HOP CONTROLS"
+hopHeader.Font = Enum.Font.GothamBold
+hopHeader.TextSize = 9
+hopHeader.TextColor3 = C_PURPLE
+hopHeader.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Mode toggle buttons: Rejoin vs Hop
+local rejoinModeBtn = Instance.new("TextButton", farmPanel)
+rejoinModeBtn.Size = UDim2.new(0.48, -4, 0, 24)
+rejoinModeBtn.Position = UDim2.new(0, 12, 0, 194)
+rejoinModeBtn.BackgroundColor3 = (Config.HopMode ~= "ServerHop") and Color3.fromRGB(30, 45, 75) or C_CARD
+rejoinModeBtn.Text = "🔄 Mode: Rejoin Server"
+rejoinModeBtn.Font = Enum.Font.GothamBold
+rejoinModeBtn.TextSize = 9
+rejoinModeBtn.TextColor3 = (Config.HopMode ~= "ServerHop") and C_CYAN or C_DIM
+do Instance.new("UICorner", rejoinModeBtn).CornerRadius = UDim.new(0, 5) end
+
+local serverHopModeBtn = Instance.new("TextButton", farmPanel)
+serverHopModeBtn.Size = UDim2.new(0.48, -4, 0, 24)
+serverHopModeBtn.Position = UDim2.new(0.52, 0, 0, 194)
+serverHopModeBtn.BackgroundColor3 = (Config.HopMode == "ServerHop") and Color3.fromRGB(45, 30, 75) or C_CARD
+serverHopModeBtn.Text = "🌐 Mode: New Server Hop"
+serverHopModeBtn.Font = Enum.Font.GothamBold
+serverHopModeBtn.TextSize = 9
+serverHopModeBtn.TextColor3 = (Config.HopMode == "ServerHop") and C_YELLOW or C_DIM
+do Instance.new("UICorner", serverHopModeBtn).CornerRadius = UDim.new(0, 5) end
+
+local function SyncHopModeUI()
+    rejoinModeBtn.BackgroundColor3 = (Config.HopMode ~= "ServerHop") and Color3.fromRGB(30, 45, 75) or C_CARD
+    rejoinModeBtn.TextColor3 = (Config.HopMode ~= "ServerHop") and C_CYAN or C_DIM
+    serverHopModeBtn.BackgroundColor3 = (Config.HopMode == "ServerHop") and Color3.fromRGB(45, 30, 75) or C_CARD
+    serverHopModeBtn.TextColor3 = (Config.HopMode == "ServerHop") and C_YELLOW or C_DIM
+    SaveConfig()
+end
+
+rejoinModeBtn.MouseButton1Click:Connect(function() Config.HopMode = "Rejoin"; SyncHopModeUI() end)
+serverHopModeBtn.MouseButton1Click:Connect(function() Config.HopMode = "ServerHop"; SyncHopModeUI() end)
+
+-- Thread Count Preset / Input Row (Hỗ trợ nâng tới 50+ luồng)
+local threadRow = Instance.new("Frame", farmPanel)
+threadRow.Size = UDim2.new(1, -24, 0, 24)
+threadRow.Position = UDim2.new(0, 12, 0, 222)
+threadRow.BackgroundTransparency = 1
+
+local threadTitle = Instance.new("TextLabel", threadRow)
+threadTitle.Size = UDim2.new(0, 85, 1, 0)
+threadTitle.Position = UDim2.new(0, 0, 0, 0)
+threadTitle.BackgroundTransparency = 1
+threadTitle.Text = "⚡ Threads:"
+threadTitle.Font = Enum.Font.GothamBold
+threadTitle.TextSize = 9
+threadTitle.TextColor3 = C_CYAN
+threadTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local threadInputBox = Instance.new("TextBox", threadRow)
+threadInputBox.Size = UDim2.new(0, 75, 1, 0)
+threadInputBox.Position = UDim2.new(0, 85, 0, 0)
+threadInputBox.BackgroundColor3 = C_CARD
+threadInputBox.Text = tostring(Config.ThreadCount or 50)
+threadInputBox.PlaceholderText = "2, 10, 50..."
+threadInputBox.Font = Enum.Font.GothamBold
+threadInputBox.TextSize = 10
+threadInputBox.TextColor3 = C_YELLOW
+threadInputBox.ClearTextOnFocus = false
+do
+    Instance.new("UICorner", threadInputBox).CornerRadius = UDim.new(0, 5)
+    local s = Instance.new("UIStroke", threadInputBox)
+    s.Color = C_PURPLE; s.Thickness = 1
+end
+
+local threadPresetFrame = Instance.new("Frame", threadRow)
+threadPresetFrame.Size = UDim2.new(1, -166, 1, 0)
+threadPresetFrame.Position = UDim2.new(0, 166, 0, 0)
+threadPresetFrame.BackgroundTransparency = 1
+
+local threadPresets = {
+    { text = "2L",  val = 2 },
+    { text = "5L",  val = 5 },
+    { text = "10L", val = 10 },
+    { text = "20L", val = 20 },
+    { text = "50L", val = 50 },
+    { text = "100L", val = 100 }
+}
+
+for idx, p in ipairs(threadPresets) do
+    local pb = Instance.new("TextButton", threadPresetFrame)
+    pb.Size = UDim2.new(1 / #threadPresets, -2, 1, 0)
+    pb.Position = UDim2.new((idx - 1) / #threadPresets, 0, 0, 0)
+    pb.BackgroundColor3 = C_CARD
+    pb.Text = p.text
+    pb.Font = Enum.Font.GothamBold
+    pb.TextSize = 8
+    pb.TextColor3 = C_TEXT
+    do Instance.new("UICorner", pb).CornerRadius = UDim.new(0, 4) end
+
+    pb.MouseButton1Click:Connect(function()
+        Config.ThreadCount = p.val
+        threadInputBox.Text = tostring(p.val)
+        SaveConfig()
+    end)
+end
+
+threadInputBox.FocusLost:Connect(function()
+    local val = math.clamp(math.floor(tonumber(threadInputBox.Text) or 50), 1, 200)
+    Config.ThreadCount = val
+    threadInputBox.Text = tostring(val)
+    SaveConfig()
+end)
+
+-- RAM Limit Input Row (Tự động giải phóng RAM khi chạm 10000MB)
+local ramRow = Instance.new("Frame", farmPanel)
+ramRow.Size = UDim2.new(1, -24, 0, 24)
+ramRow.Position = UDim2.new(0, 12, 0, 250)
+ramRow.BackgroundTransparency = 1
+
+local ramTitle = Instance.new("TextLabel", ramRow)
+ramTitle.Size = UDim2.new(0, 85, 1, 0)
+ramTitle.Position = UDim2.new(0, 0, 0, 0)
+ramTitle.BackgroundTransparency = 1
+ramTitle.Text = "🧠 RAM Limit:"
+ramTitle.Font = Enum.Font.GothamBold
+ramTitle.TextSize = 9
+ramTitle.TextColor3 = Color3.fromRGB(255, 170, 0)
+ramTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local ramInputBox = Instance.new("TextBox", ramRow)
+ramInputBox.Size = UDim2.new(0, 75, 1, 0)
+ramInputBox.Position = UDim2.new(0, 85, 0, 0)
+ramInputBox.BackgroundColor3 = C_CARD
+ramInputBox.Text = tostring(Config.AutoRAMLimit or 10000) .. "MB"
+ramInputBox.PlaceholderText = "10000MB..."
+ramInputBox.Font = Enum.Font.GothamBold
+ramInputBox.TextSize = 10
+ramInputBox.TextColor3 = C_GREEN
+ramInputBox.ClearTextOnFocus = false
+do
+    Instance.new("UICorner", ramInputBox).CornerRadius = UDim.new(0, 5)
+    local s = Instance.new("UIStroke", ramInputBox)
+    s.Color = C_PURPLE; s.Thickness = 1
+end
+
+local ramPresetFrame = Instance.new("Frame", ramRow)
+ramPresetFrame.Size = UDim2.new(1, -166, 1, 0)
+ramPresetFrame.Position = UDim2.new(0, 166, 0, 0)
+ramPresetFrame.BackgroundTransparency = 1
+
+local ramPresets = {
+    { text = "4GB",  val = 4000 },
+    { text = "6GB",  val = 6000 },
+    { text = "8GB",  val = 8000 },
+    { text = "10GB", val = 10000 },
+    { text = "12GB", val = 12000 },
+    { text = "15GB", val = 15000 }
+}
+
+for idx, p in ipairs(ramPresets) do
+    local pb = Instance.new("TextButton", ramPresetFrame)
+    pb.Size = UDim2.new(1 / #ramPresets, -2, 1, 0)
+    pb.Position = UDim2.new((idx - 1) / #ramPresets, 0, 0, 0)
+    pb.BackgroundColor3 = C_CARD
+    pb.Text = p.text
+    pb.Font = Enum.Font.GothamBold
+    pb.TextSize = 8
+    pb.TextColor3 = C_TEXT
+    do Instance.new("UICorner", pb).CornerRadius = UDim.new(0, 4) end
+
+    pb.MouseButton1Click:Connect(function()
+        Config.AutoRAMLimit = p.val
+        ramInputBox.Text = tostring(p.val) .. "MB"
+        SaveConfig()
+    end)
+end
+
+ramInputBox.FocusLost:Connect(function()
+    local num = tonumber(ramInputBox.Text:lower():gsub("mb", ""):gsub("%s+", "")) or 10000
+    local val = math.clamp(math.floor(num), 1000, 50000)
+    Config.AutoRAMLimit = val
+    ramInputBox.Text = tostring(val) .. "MB"
+    SaveConfig()
+end)
+
+-- Direct Number / Time Input Row (Supports s / m / h and typing numbers)
+local inputRow = Instance.new("Frame", farmPanel)
+inputRow.Size = UDim2.new(1, -24, 0, 24)
+inputRow.Position = UDim2.new(0, 12, 0, 278)
+inputRow.BackgroundTransparency = 1
+
+local inputTitle = Instance.new("TextLabel", inputRow)
+inputTitle.Size = UDim2.new(0, 85, 1, 0)
+inputTitle.Position = UDim2.new(0, 0, 0, 0)
+inputTitle.BackgroundTransparency = 1
+inputTitle.Text = "⏱ Interval:"
+inputTitle.Font = Enum.Font.GothamBold
+inputTitle.TextSize = 9
+inputTitle.TextColor3 = C_DIM
+inputTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local timeInputBox = Instance.new("TextBox", inputRow)
+timeInputBox.Size = UDim2.new(0, 75, 1, 0)
+timeInputBox.Position = UDim2.new(0, 85, 0, 0)
+timeInputBox.BackgroundColor3 = C_CARD
+timeInputBox.Text = FormatTimeDisplay(Config.HopInterval)
+timeInputBox.PlaceholderText = "70s, 5m, 1h..."
+timeInputBox.Font = Enum.Font.GothamBold
+timeInputBox.TextSize = 10
+timeInputBox.TextColor3 = C_CYAN
+timeInputBox.ClearTextOnFocus = false
+do
+    Instance.new("UICorner", timeInputBox).CornerRadius = UDim.new(0, 5)
+    local s = Instance.new("UIStroke", timeInputBox)
+    s.Color = C_PURPLE; s.Thickness = 1
+end
+
+local presetFrame = Instance.new("Frame", inputRow)
+presetFrame.Size = UDim2.new(1, -166, 1, 0)
+presetFrame.Position = UDim2.new(0, 166, 0, 0)
+presetFrame.BackgroundTransparency = 1
+
+local unitPresets = {
+    { text = "70s", val = 70 },
+    { text = "2m",  val = 120 },
+    { text = "5m",  val = 300 },
+    { text = "10m", val = 600 },
+    { text = "30m", val = 1800 },
+    { text = "1h",  val = 3600 }
+}
+
+local hopToggleBtn = Instance.new("TextButton", farmPanel)
+
+local function UpdateHopTimerLabel()
+    local displayTime = FormatTimeDisplay(Config.HopInterval)
+    hopToggleBtn.Text = Config.AutoHopEnabled and string.format("🚀 Auto Reset: ON (%s)", displayTime) or "🚀 Auto Reset: OFF"
+    hopToggleBtn.TextColor3 = Config.AutoHopEnabled and C_GREEN or C_RED
+    hopToggleBtn.BackgroundColor3 = Config.AutoHopEnabled and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+    timeInputBox.Text = displayTime
+end
+
+for idx, p in ipairs(unitPresets) do
+    local pb = Instance.new("TextButton", presetFrame)
+    pb.Size = UDim2.new(1 / #unitPresets, -2, 1, 0)
+    pb.Position = UDim2.new((idx - 1) / #unitPresets, 0, 0, 0)
+    pb.BackgroundColor3 = C_CARD
+    pb.Text = p.text
+    pb.Font = Enum.Font.GothamBold
+    pb.TextSize = 8
+    pb.TextColor3 = C_TEXT
+    do Instance.new("UICorner", pb).CornerRadius = UDim.new(0, 4) end
+
+    pb.MouseButton1Click:Connect(function()
+        Config.HopInterval = p.val
+        UpdateHopTimerLabel()
+        SaveConfig()
+    end)
+end
+
+-- TextBox Enter / FocusLost Listener
+timeInputBox.FocusLost:Connect(function(enterPressed)
+    local parsed = ParseTimeToSeconds(timeInputBox.Text)
+    Config.HopInterval = parsed
+    UpdateHopTimerLabel()
+    SaveConfig()
+end)
+
+-- Hop Toggle & Action Buttons
+hopToggleBtn.Size = UDim2.new(0.68, -12, 0, 24)
+hopToggleBtn.Position = UDim2.new(0, 12, 0, 306)
+hopToggleBtn.Font = Enum.Font.GothamBold
+hopToggleBtn.TextSize = 9
+do Instance.new("UICorner", hopToggleBtn).CornerRadius = UDim.new(0, 6) end
+UpdateHopTimerLabel()
+
+hopToggleBtn.MouseButton1Click:Connect(function()
+    Config.AutoHopEnabled = not Config.AutoHopEnabled
+    UpdateHopTimerLabel()
+    SaveConfig()
+end)
+
+local forceHopBtn = Instance.new("TextButton", farmPanel)
+forceHopBtn.Size = UDim2.new(0.32, -4, 0, 24)
+forceHopBtn.Position = UDim2.new(0.68, 4, 0, 306)
+forceHopBtn.BackgroundColor3 = Color3.fromRGB(80, 40, 30)
+forceHopBtn.Text = "⚡ HOP NOW"
+forceHopBtn.Font = Enum.Font.GothamBold
+forceHopBtn.TextSize = 9
+forceHopBtn.TextColor3 = C_YELLOW
+do Instance.new("UICorner", forceHopBtn).CornerRadius = UDim.new(0, 6) end
+forceHopBtn.MouseButton1Click:Connect(function() FastServerHop() end)
+
+-- Options row at bottom of panel
+local autoCombineBtn = Instance.new("TextButton", farmPanel)
+autoCombineBtn.Size = UDim2.new(0.32, -4, 0, 24)
+autoCombineBtn.Position = UDim2.new(0, 12, 0, 334)
+local isAutoComb = Config.AutoCombineAfterFarm ~= false
+autoCombineBtn.BackgroundColor3 = isAutoComb and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+autoCombineBtn.Text = isAutoComb and "🔄 Combine: ON" or "🔄 Combine: OFF"
+autoCombineBtn.Font = Enum.Font.GothamBold
+autoCombineBtn.TextSize = 8
+autoCombineBtn.TextColor3 = isAutoComb and C_GREEN or C_RED
+do Instance.new("UICorner", autoCombineBtn).CornerRadius = UDim.new(0, 5) end
+
+autoCombineBtn.MouseButton1Click:Connect(function()
+    Config.AutoCombineAfterFarm = not Config.AutoCombineAfterFarm
+    local active = Config.AutoCombineAfterFarm
+    autoCombineBtn.Text = active and "🔄 Combine: ON" or "🔄 Combine: OFF"
+    autoCombineBtn.TextColor3 = active and C_GREEN or C_RED
+    autoCombineBtn.BackgroundColor3 = active and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+    SaveConfig()
+end)
+
+local autoStartBtn = Instance.new("TextButton", farmPanel)
+autoStartBtn.Size = UDim2.new(0.32, -4, 0, 24)
+autoStartBtn.Position = UDim2.new(0.34, 4, 0, 334)
+local isAutoStart = Config.AutoStartFarm == true
+autoStartBtn.BackgroundColor3 = isAutoStart and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+autoStartBtn.Text = isAutoStart and "⚡ AutoStart: ON" or "⚡ AutoStart: OFF"
+autoStartBtn.Font = Enum.Font.GothamBold
+autoStartBtn.TextSize = 8
+autoStartBtn.TextColor3 = isAutoStart and C_GREEN or C_RED
+do Instance.new("UICorner", autoStartBtn).CornerRadius = UDim.new(0, 5) end
+
+autoStartBtn.MouseButton1Click:Connect(function()
+    Config.AutoStartFarm = not Config.AutoStartFarm
+    local active = Config.AutoStartFarm
+    autoStartBtn.Text = active and "⚡ AutoStart: ON" or "⚡ AutoStart: OFF"
+    autoStartBtn.TextColor3 = active and C_GREEN or C_RED
+    autoStartBtn.BackgroundColor3 = active and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+    SaveConfig()
+end)
+
+local cleanMapBtn = Instance.new("TextButton", farmPanel)
+cleanMapBtn.Size = UDim2.new(0.32, -4, 0, 24)
+cleanMapBtn.Position = UDim2.new(0.67, 4, 0, 334)
+cleanMapBtn.BackgroundColor3 = Color3.fromRGB(30, 45, 65)
+cleanMapBtn.Text = "🧹 Clean Map"
+cleanMapBtn.Font = Enum.Font.GothamBold
+cleanMapBtn.TextSize = 8
+cleanMapBtn.TextColor3 = C_CYAN
+do Instance.new("UICorner", cleanMapBtn).CornerRadius = UDim.new(0, 5) end
+
+cleanMapBtn.MouseButton1Click:Connect(function()
+    cleanMapBtn.Text = "⏳ Cleaning..."
+    OptimizeMapAndAssets()
+    cleanMapBtn.Text = "✓ Map Cleaned!"
+    cleanMapBtn.TextColor3 = C_GREEN
+    task.wait(1.5)
+    cleanMapBtn.Text = "🧹 Clean Map"
+    cleanMapBtn.TextColor3 = C_CYAN
+end)
+
+
+-- Bottom Action Buttons Bar
+local startFarmBtn = Instance.new("TextButton", pageFarm)
+startFarmBtn.Size = UDim2.new(0.48, -12, 0, 38)
+startFarmBtn.Position = UDim2.new(0, 12, 1, -48)
+startFarmBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 50)
+startFarmBtn.Text = "▶ START BURST FARM"
+startFarmBtn.Font = Enum.Font.GothamBold
+startFarmBtn.TextSize = 12
+startFarmBtn.TextColor3 = C_GREEN
+do Instance.new("UICorner", startFarmBtn).CornerRadius = UDim.new(0, 8) end
+
+local stopFarmBtn = Instance.new("TextButton", pageFarm)
+stopFarmBtn.Size = UDim2.new(0.48, -12, 0, 38)
+stopFarmBtn.Position = UDim2.new(0.52, 0, 1, -48)
+stopFarmBtn.BackgroundColor3 = Color3.fromRGB(70, 30, 40)
+stopFarmBtn.Text = "⏹ STOP BURST FARM"
+stopFarmBtn.Font = Enum.Font.GothamBold
+stopFarmBtn.TextSize = 12
+stopFarmBtn.TextColor3 = C_RED
+do Instance.new("UICorner", stopFarmBtn).CornerRadius = UDim.new(0, 8) end
+
+
+-- ============================================================================
+-- PAGE 2: KEY COMBINE INTERFACE
+-- ============================================================================
+local combineScroll = Instance.new("ScrollingFrame", pageCombine)
+combineScroll.Size = UDim2.new(1, -24, 1, -64)
+combineScroll.Position = UDim2.new(0, 12, 0, 10)
+combineScroll.BackgroundColor3 = C_PANEL
+combineScroll.BorderSizePixel = 0
+combineScroll.ScrollBarThickness = 4
+combineScroll.ScrollBarImageColor3 = C_PURPLE
+do
+    Instance.new("UICorner", combineScroll).CornerRadius = UDim.new(0, 8)
+    local us = Instance.new("UIStroke", combineScroll)
+    us.Color = C_BORDER; us.Thickness = 1
+    local pad = Instance.new("UIPadding", combineScroll)
+    pad.PaddingTop = UDim.new(0, 8); pad.PaddingBottom = UDim.new(0, 8)
+    pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8)
+    local lay = Instance.new("UIListLayout", combineScroll)
+    lay.Padding = UDim.new(0, 6)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+    lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        combineScroll.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 16)
+    end)
+end
+
+-- Batch & Delay Config Row
+local controlFrame = Instance.new("Frame", combineScroll)
+controlFrame.Size = UDim2.new(1, 0, 0, 36)
+controlFrame.BackgroundColor3 = C_CARD
+controlFrame.BorderSizePixel = 0
+do Instance.new("UICorner", controlFrame).CornerRadius = UDim.new(0, 6) end
+
+local cfgLabel = Instance.new("TextLabel", controlFrame)
+cfgLabel.Size = UDim2.new(0, 190, 1, 0)
+cfgLabel.Position = UDim2.new(0, 10, 0, 0)
+cfgLabel.BackgroundTransparency = 1
+cfgLabel.Text = string.format("Batch: %d | Delay: %.2fs", Config.CombineBatch, Config.CombineDelay)
+cfgLabel.Font = Enum.Font.GothamBold
+cfgLabel.TextSize = 10
+cfgLabel.TextColor3 = C_CYAN
+cfgLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local function MakeConfigBtn(text, x, w, color, callback)
+    local b = Instance.new("TextButton", controlFrame)
+    b.Size = UDim2.new(0, w, 0, 22)
+    b.Position = UDim2.new(1, x, 0.5, -11)
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 10
+    b.TextColor3 = C_WHITE
+    do Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4) end
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+
+MakeConfigBtn("- B", -210, 46, Color3.fromRGB(50, 40, 70), function()
+    Config.CombineBatch = math.max(1, Config.CombineBatch - 1)
+    cfgLabel.Text = string.format("Batch: %d | Delay: %.2fs", Config.CombineBatch, Config.CombineDelay)
+    SaveConfig()
+end)
+MakeConfigBtn("+ B", -160, 46, Color3.fromRGB(70, 50, 110), function()
+    Config.CombineBatch = math.min(50, Config.CombineBatch + 1)
+    cfgLabel.Text = string.format("Batch: %d | Delay: %.2fs", Config.CombineBatch, Config.CombineDelay)
+    SaveConfig()
+end)
+MakeConfigBtn("- D", -108, 46, Color3.fromRGB(50, 40, 70), function()
+    Config.CombineDelay = math.max(0.01, Config.CombineDelay - 0.02)
+    cfgLabel.Text = string.format("Batch: %d | Delay: %.2fs", Config.CombineBatch, Config.CombineDelay)
+    SaveConfig()
+end)
+MakeConfigBtn("+ D", -58, 46, Color3.fromRGB(70, 50, 110), function()
+    Config.CombineDelay = math.min(2.0, Config.CombineDelay + 0.02)
+    cfgLabel.Text = string.format("Batch: %d | Delay: %.2fs", Config.CombineBatch, Config.CombineDelay)
+    SaveConfig()
+end)
+
+-- Key Type Rows
+local keyCombineRows = {}
+for _, kt in ipairs(KEY_TYPES) do
+    local row = Instance.new("Frame", combineScroll)
+    row.Size = UDim2.new(1, 0, 0, 32)
+    row.BackgroundColor3 = C_CARD
+    row.BorderSizePixel = 0
+    do Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6) end
+
+    local titleLbl = Instance.new("TextLabel", row)
+    titleLbl.Size = UDim2.new(0, 100, 1, 0)
+    titleLbl.Position = UDim2.new(0, 10, 0, 0)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text = "🔑 " .. kt.name .. " Key"
+    titleLbl.Font = Enum.Font.GothamBold
+    titleLbl.TextSize = 11
+    titleLbl.TextColor3 = C_TEXT
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local countLbl = Instance.new("TextLabel", row)
+    countLbl.Size = UDim2.new(0, 190, 1, 0)
+    countLbl.Position = UDim2.new(0, 110, 0, 0)
+    countLbl.BackgroundTransparency = 1
+    countLbl.Text = "Upper: 0 | Lower: 0 (Can: 0)"
+    countLbl.Font = Enum.Font.Code
+    countLbl.TextSize = 10
+    countLbl.TextColor3 = C_DIM
+    countLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local isEnabled = Config.SelectedKeys[kt.name] ~= false
+    local toggleKeyBtn = Instance.new("TextButton", row)
+    toggleKeyBtn.Size = UDim2.new(0, 70, 0, 22)
+    toggleKeyBtn.Position = UDim2.new(1, -78, 0.5, -11)
+    toggleKeyBtn.BackgroundColor3 = isEnabled and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+    toggleKeyBtn.Text = isEnabled and "ENABLED" or "DISABLED"
+    toggleKeyBtn.Font = Enum.Font.GothamBold
+    toggleKeyBtn.TextSize = 9
+    toggleKeyBtn.TextColor3 = isEnabled and C_GREEN or C_RED
+    do Instance.new("UICorner", toggleKeyBtn).CornerRadius = UDim.new(0, 4) end
+
+    toggleKeyBtn.MouseButton1Click:Connect(function()
+        Config.SelectedKeys[kt.name] = not Config.SelectedKeys[kt.name]
+        local active = Config.SelectedKeys[kt.name]
+        toggleKeyBtn.Text = active and "ENABLED" or "DISABLED"
+        toggleKeyBtn.TextColor3 = active and C_GREEN or C_RED
+        toggleKeyBtn.BackgroundColor3 = active and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+        SaveConfig()
+    end)
+
+    keyCombineRows[kt.name] = countLbl
+end
+
+local startCombineBtn = Instance.new("TextButton", pageCombine)
+startCombineBtn.Size = UDim2.new(0.48, -12, 0, 38)
+startCombineBtn.Position = UDim2.new(0, 12, 1, -48)
+startCombineBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 50)
+startCombineBtn.Text = "▶ START COMBINE"
+startCombineBtn.Font = Enum.Font.GothamBold
+startCombineBtn.TextSize = 12
+startCombineBtn.TextColor3 = C_GREEN
+do Instance.new("UICorner", startCombineBtn).CornerRadius = UDim.new(0, 8) end
+
+local stopCombineBtn = Instance.new("TextButton", pageCombine)
+stopCombineBtn.Size = UDim2.new(0.48, -12, 0, 38)
+stopCombineBtn.Position = UDim2.new(0.52, 0, 1, -48)
+stopCombineBtn.BackgroundColor3 = Color3.fromRGB(70, 30, 40)
+stopCombineBtn.Text = "⏹ STOP COMBINE"
+stopCombineBtn.Font = Enum.Font.GothamBold
+stopCombineBtn.TextSize = 12
+stopCombineBtn.TextColor3 = C_RED
+do Instance.new("UICorner", stopCombineBtn).CornerRadius = UDim.new(0, 8) end
+
+
+-- ============================================================================
+-- PAGE 3: OVERVIEW DASHBOARD INTERFACE
+-- ============================================================================
+local dashScroll = Instance.new("ScrollingFrame", pageDash)
+dashScroll.Size = UDim2.new(1, -24, 1, -20)
+dashScroll.Position = UDim2.new(0, 12, 0, 10)
+dashScroll.BackgroundColor3 = C_PANEL
+dashScroll.BorderSizePixel = 0
+dashScroll.ScrollBarThickness = 4
+dashScroll.ScrollBarImageColor3 = C_PURPLE
+do
+    Instance.new("UICorner", dashScroll).CornerRadius = UDim.new(0, 8)
+    local us = Instance.new("UIStroke", dashScroll)
+    us.Color = C_BORDER; us.Thickness = 1
+    local pad = Instance.new("UIPadding", dashScroll)
+    pad.PaddingTop = UDim.new(0, 10); pad.PaddingBottom = UDim.new(0, 10)
+    pad.PaddingLeft = UDim.new(0, 10); pad.PaddingRight = UDim.new(0, 10)
+    local lay = Instance.new("UIListLayout", dashScroll)
+    lay.Padding = UDim.new(0, 8)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+    lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        dashScroll.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 16)
+    end)
+end
+
+local function MakeDashCard(titleText, valText, color)
+    local card = Instance.new("Frame", dashScroll)
+    card.Size = UDim2.new(1, 0, 0, 42)
+    card.BackgroundColor3 = C_CARD
+    card.BorderSizePixel = 0
+    do Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6) end
+
+    local tLbl = Instance.new("TextLabel", card)
+    tLbl.Size = UDim2.new(0, 180, 1, 0)
+    tLbl.Position = UDim2.new(0, 12, 0, 0)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = titleText
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 11
+    tLbl.TextColor3 = C_DIM
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local vLbl = Instance.new("TextLabel", card)
+    vLbl.Size = UDim2.new(1, -200, 1, 0)
+    vLbl.Position = UDim2.new(0, 190, 0, 0)
+    vLbl.BackgroundTransparency = 1
+    vLbl.Text = valText
+    vLbl.Font = Enum.Font.Code
+    vLbl.TextSize = 11
+    vLbl.TextColor3 = color or C_TEXT
+    vLbl.TextXAlignment = Enum.TextXAlignment.Left
+    return vLbl
+end
+
+local dashFPS       = MakeDashCard("🖥 System Performance:", "FPS: 60 | RAM Saver: Active", C_GREEN)
+local dashCombine   = MakeDashCard("⚡ Keys Combined:", "0 Keys", C_PURPLE)
+local dashSpins     = MakeDashCard("🔑 Total Key Opens:", "0 Opens", C_CYAN)
+local dashInventory = MakeDashCard("📦 Full Keys Total:", "0 Full Keys Available", C_YELLOW)
+
+-- Live FPS Meter
+local fps, lastFpsTime, fpsFrames = 0, os.clock(), 0
+RunService.Heartbeat:Connect(function()
+    fpsFrames = fpsFrames + 1
+    local now = os.clock()
+    if now - lastFpsTime >= 1 then
+        fps = fpsFrames; fpsFrames = 0; lastFpsTime = now
+        dashFPS.Text = string.format("FPS: %d | Status: Smooth", fps)
+        dashFPS.TextColor3 = fps >= 50 and C_GREEN or fps >= 30 and C_YELLOW or C_RED
+    end
+end)
+
+
+-- ============================================================================
+-- PAGE 4: CONFIG INTERFACE
+-- ============================================================================
+local configScroll = Instance.new("ScrollingFrame", pageConfig)
+configScroll.Size = UDim2.new(1, -24, 1, -20)
+configScroll.Position = UDim2.new(0, 12, 0, 10)
+configScroll.BackgroundColor3 = C_PANEL
+configScroll.BorderSizePixel = 0
+configScroll.ScrollBarThickness = 4
+configScroll.ScrollBarImageColor3 = C_PURPLE
+do
+    Instance.new("UICorner", configScroll).CornerRadius = UDim.new(0, 8)
+    local us = Instance.new("UIStroke", configScroll)
+    us.Color = C_BORDER; us.Thickness = 1
+    local pad = Instance.new("UIPadding", configScroll)
+    pad.PaddingTop = UDim.new(0, 10); pad.PaddingBottom = UDim.new(0, 10)
+    pad.PaddingLeft = UDim.new(0, 10); pad.PaddingRight = UDim.new(0, 10)
+    local lay = Instance.new("UIListLayout", configScroll)
+    lay.Padding = UDim.new(0, 8)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+    lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        configScroll.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 16)
+    end)
+end
+
+local function MakeConfigRow(titleText, valText, decCb, incCb)
+    local card = Instance.new("Frame", configScroll)
+    card.Size = UDim2.new(1, 0, 0, 42)
+    card.BackgroundColor3 = C_CARD
+    card.BorderSizePixel = 0
+    do Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6) end
+
+    local tLbl = Instance.new("TextLabel", card)
+    tLbl.Size = UDim2.new(0, 180, 1, 0)
+    tLbl.Position = UDim2.new(0, 12, 0, 0)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = titleText
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 11
+    tLbl.TextColor3 = C_DIM
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local vLbl = Instance.new("TextLabel", card)
+    vLbl.Size = UDim2.new(0, 100, 1, 0)
+    vLbl.Position = UDim2.new(0.5, -50, 0, 0)
+    vLbl.BackgroundTransparency = 1
+    vLbl.Text = valText
+    vLbl.Font = Enum.Font.GothamBold
+    vLbl.TextSize = 14
+    vLbl.TextColor3 = C_TEXT
+    vLbl.TextXAlignment = Enum.TextXAlignment.Center
+
+    local decBtn = Instance.new("TextButton", card)
+    decBtn.Size = UDim2.new(0, 30, 0, 26)
+    decBtn.Position = UDim2.new(1, -75, 0.5, -13)
+    decBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 65)
+    decBtn.Text = "-"
+    decBtn.Font = Enum.Font.GothamBold
+    decBtn.TextSize = 16
+    decBtn.TextColor3 = C_PURPLE
+    do Instance.new("UICorner", decBtn).CornerRadius = UDim.new(0, 4) end
+
+    local incBtn = Instance.new("TextButton", card)
+    incBtn.Size = UDim2.new(0, 30, 0, 26)
+    incBtn.Position = UDim2.new(1, -38, 0.5, -13)
+    incBtn.BackgroundColor3 = Color3.fromRGB(65, 45, 95)
+    incBtn.Text = "+"
+    incBtn.Font = Enum.Font.GothamBold
+    incBtn.TextSize = 16
+    incBtn.TextColor3 = C_PURPLE
+    do Instance.new("UICorner", incBtn).CornerRadius = UDim.new(0, 4) end
+
+    decBtn.MouseButton1Click:Connect(function() decCb(vLbl) end)
+    incBtn.MouseButton1Click:Connect(function() incCb(vLbl) end)
+
+    return vLbl
+end
+
+local function MakeConfigInputRow(titleText, initialValStr, onApplyCb)
+    local card = Instance.new("Frame", configScroll)
+    card.Size = UDim2.new(1, 0, 0, 42)
+    card.BackgroundColor3 = C_CARD
+    card.BorderSizePixel = 0
+    do Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6) end
+
+    local tLbl = Instance.new("TextLabel", card)
+    tLbl.Size = UDim2.new(0, 180, 1, 0)
+    tLbl.Position = UDim2.new(0, 12, 0, 0)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = titleText
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 11
+    tLbl.TextColor3 = C_DIM
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local box = Instance.new("TextBox", card)
+    box.Size = UDim2.new(0, 110, 0, 26)
+    box.Position = UDim2.new(1, -122, 0.5, -13)
+    box.BackgroundColor3 = Color3.fromRGB(20, 24, 38)
+    box.Text = initialValStr
+    box.PlaceholderText = "Type number/s/m/h..."
+    box.Font = Enum.Font.GothamBold
+    box.TextSize = 12
+    box.TextColor3 = C_CYAN
+    box.ClearTextOnFocus = false
+    do
+        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
+        local stroke = Instance.new("UIStroke", box)
+        stroke.Color = C_PURPLE; stroke.Thickness = 1
+    end
+
+    box.FocusLost:Connect(function()
+        onApplyCb(box)
+    end)
+    return box
+end
+
+MakeConfigRow("⏱ Burst Delay (s):", string.format("%.3f", Config.BurstDelay),
+    function(lbl)
+        Config.BurstDelay = math.max(0.005, Config.BurstDelay - 0.005)
+        lbl.Text = string.format("%.3f", Config.BurstDelay)
+        SaveConfig()
+    end,
+    function(lbl)
+        Config.BurstDelay = math.min(1.0, Config.BurstDelay + 0.005)
+        lbl.Text = string.format("%.3f", Config.BurstDelay)
+        SaveConfig()
+    end
+)
+
+MakeConfigRow("🧵 Thread Count:", tostring(Config.ThreadCount),
+    function(lbl)
+        Config.ThreadCount = math.max(1, Config.ThreadCount - 1)
+        lbl.Text = tostring(Config.ThreadCount)
+        SaveConfig()
+    end,
+    function(lbl)
+        Config.ThreadCount = math.min(20, Config.ThreadCount + 1)
+        lbl.Text = tostring(Config.ThreadCount)
+        SaveConfig()
+    end
+)
+
+MakeConfigInputRow("🚀 Hop Interval (s/m/h):", FormatTimeDisplay(Config.HopInterval), function(box)
+    local parsed = ParseTimeToSeconds(box.Text)
+    Config.HopInterval = parsed
+    box.Text = FormatTimeDisplay(parsed)
+    UpdateHopTimerLabel()
+    SaveConfig()
+end)
+
+-- About Card
+local aboutCard = Instance.new("Frame", configScroll)
+aboutCard.Size = UDim2.new(1, 0, 0, 75)
+aboutCard.BackgroundColor3 = C_CARD
+aboutCard.BorderSizePixel = 0
+do Instance.new("UICorner", aboutCard).CornerRadius = UDim.new(0, 6) end
+
+local aboutText = Instance.new("TextLabel", aboutCard)
+aboutText.Size = UDim2.new(1, -20, 1, -12)
+aboutText.Position = UDim2.new(0, 10, 0, 6)
+aboutText.BackgroundTransparency = 1
+aboutText.Text = "you gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay gay"
+aboutText.Font = Enum.Font.Gotham
+aboutText.TextSize = 10
+aboutText.TextColor3 = C_DIM
+aboutText.TextWrapped = true
+aboutText.TextXAlignment = Enum.TextXAlignment.Left
+aboutText.TextYAlignment = Enum.TextYAlignment.Top
+
+
+-- ============================================================================
+-- LOGIC & THREAD EXECUTIONS
+-- ============================================================================
+
+-- Key Combine Execution Loop
+local function RunCombineLoop()
+    while Config.CombineEnabled do
+        local counts = GetInventoryKeyCounts()
+        local anyCombined = false
+
+        for _, kt in ipairs(KEY_TYPES) do
+            if not Config.CombineEnabled then break end
+            -- Combine ALL key types có halves, không filter theo SelectedKeys
+            local c = counts[kt.name]
+            local canCombine = math.min(c.upper, c.lower, Config.CombineBatch)
+            if canCombine > 0 then
+                for i = 1, canCombine do
+                    if not Config.CombineEnabled then break end
+                    task.spawn(function()
+                        local ok, res = pcall(function()
+                            return Network.Invoke(kt.remote, 1)
+                        end)
+                        if ok and res then
+                            Stats.Combined = Stats.Combined + 1
+                        else
+                            Stats.CombineErrors = Stats.CombineErrors + 1
+                        end
+                    end)
+                end
+                anyCombined = true
+            end
+        end
+
+        local totalFullKeys = 0
+        for _, kt in ipairs(KEY_TYPES) do
+            local c = counts[kt.name]
+            local canCombine = math.min(c.upper, c.lower)
+            if keyCombineRows[kt.name] then
+                keyCombineRows[kt.name].Text = string.format("Upper: %d | Lower: %d (Can: %d)", c.upper, c.lower, canCombine)
+            end
+            totalFullKeys = totalFullKeys + c.full
+        end
+
+        dashCombine.Text = string.format("%d Keys Combined", Stats.Combined)
+        dashInventory.Text = string.format("%d Full Keys Available", totalFullKeys)
+
+        task.wait(Config.CombineDelay)
+    end
+end
+
+-- Multi-Thread Wheel Burst Loop (uses active key from Config.SelectedKeys)
+local function RunFarmLoop()
+    Stats.HopStartTime = os.clock()
+    Stats.FarmStartTime = os.clock()
+    Stats.Spins = 0
+    Stats.ConfirmedSpins = 0
+
+    -- Detect active key at farm start
+    local initialCounts = GetInventoryKeyCounts()
+    local activeKt = GetActiveFarmKey(initialCounts)
+    if not activeKt then
+        warn("[KEY] RunFarmLoop ABORT — no key available")
+        farmStatusLbl.Text = "⛔ No keys available!"
+        farmStatusLbl.TextColor3 = C_RED
+        Config.FarmEnabled = false
+        startFarmBtn.Text = "▶ START BURST FARM"
+        startFarmBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 50)
+        return
+    end
+    print(string.format("[KEY] Farm START → %s | wheel=%s | room=%s", activeKt.name, activeKt.wheel, activeKt.room))
+
+    -- Disable 3D Rendering to eliminate GPU load
+    pcall(function() RunService:Set3dRenderingEnabled(false) end)
+
+    -- Auto Server Hop / Rejoin Timer Thread
+    task.spawn(function()
+        while Config.FarmEnabled do
+            if Config.AutoHopEnabled then
+                local elapsed = os.clock() - Stats.HopStartTime
+                local remaining = math.max(0, math.floor(Config.HopInterval - elapsed))
+                local actionName = (Config.HopMode == "ServerHop") and "Hop" or "Rejoin"
+                farmHopTimerLbl.Text = string.format("%s (%s Active)", FormatTimeDisplay(remaining), actionName)
+
+                if remaining <= 0 then
+                    farmHopTimerLbl.Text = string.format("🚀 EXECUTING %s...", string.upper(actionName))
+                    farmHopTimerLbl.TextColor3 = C_YELLOW
+                    FastServerHop()
+                    break
+                end
+            else
+                farmHopTimerLbl.Text = "Disabled"
+                farmHopTimerLbl.TextColor3 = C_DIM
+            end
+            task.wait(1)
+        end
+    end)
+
+    -- activeKt là upvalue shared giữa worker threads và stats monitor
+    -- Chỉ stats monitor (0.5s) mới update, worker chỉ đọc → không scan inventory mỗi burst
+    local currentSession = (Stats.FarmSessionId or 0) + 1
+    Stats.FarmSessionId = currentSession
+    local sharedKt = activeKt  -- khởi tạo từ key đã detect ở đầu
+
+    for threadIdx = 1, Config.ThreadCount do
+        task.spawn(function()
+            while Config.FarmEnabled and Stats.FarmSessionId == currentSession do
+                local kt = sharedKt
+                if not kt then
+                    task.wait(0.1)
+                    continue
+                end
+
+                -- High-Speed Parallel RPC Burst Engine (~2.0/s - 2.5/s+)
+                task.spawn(function()
+                    pcall(function() Network.Invoke("SecretRoom_Unlock", kt.room) end)
+                end)
+
+                task.spawn(function()
+                    local ok, r = pcall(function()
+                        return Network.Invoke("Spinny Wheel: Request Spin", kt.wheel)
+                    end)
+                    Stats.Spins = Stats.Spins + 1
+                    if ok and r then
+                        Stats.ConfirmedSpins = Stats.ConfirmedSpins + 1
+                    else
+                        Stats.FarmErrors = (Stats.FarmErrors or 0) + 1
+                    end
+                end)
+
+                -- Continuous Instance Reset cho Zero-Delay Burst
+                pcall(function() Network.Fire("Instancing_PlayerLeaveInstance", kt.room) end)
+
+                task.wait(Config.BurstDelay)
+            end
+        end)
+    end
+
+    -- Realtime Stats Monitor Loop (0.5s) — chỉ nơi này scan inventory & update sharedKt
+    while Config.FarmEnabled and Stats.FarmSessionId == currentSession do
+        local countsNow = GetInventoryKeyCounts()
+
+        local currentKt = GetActiveFarmKey(countsNow)
+        sharedKt = currentKt  -- update cho worker threads đọc
+
+        local activeKeyCount = 0
+        if currentKt then
+            local c = countsNow[currentKt.name]
+            if c and c.full > 0 then
+                activeKeyCount = c.full
+            elseif currentKt.ticket then
+                for _, tkt in ipairs(KEY_TYPES) do
+                    if tkt.full == currentKt.ticket then
+                        activeKeyCount = countsNow[tkt.name] and countsNow[tkt.name].full or 0
+                        break
+                    end
+                end
+            end
+        end
+        local activeKeyName  = currentKt and currentKt.name or "None"
+
+        local crystalKeys = countsNow["Crystal"] and countsNow["Crystal"].full or 0
+        local secretKeys  = countsNow["Secret"]  and countsNow["Secret"].full  or 0
+
+        local elapsed = os.clock() - Stats.FarmStartTime
+        local confirmedPerSec = elapsed > 0 and (Stats.ConfirmedSpins / elapsed) or 0
+        local estDay = confirmedPerSec * 86400
+
+        farmStatusLbl.Text = string.format("Farming (%s Wheel)", activeKeyName)
+        farmStatusLbl.TextColor3 = C_GREEN
+
+        farmSpinsLbl.Text      = string.format("%d Confirmed | %d Attempts", Stats.ConfirmedSpins, Stats.Spins)
+        farmRateLbl.Text       = string.format("%.1f/s | %.0f/min | ~%.0fk/day (real)", confirmedPerSec, confirmedPerSec * 60, estDay / 1000)
+        farmKeysLbl.Text       = string.format("%d Crystal Keys", crystalKeys)
+        farmSecretKeysLbl.Text = string.format("%d Secret Keys", secretKeys)
+        farmUsedLbl.Text       = string.format("Real: %d | Fired: %d | Active: %d %s", Stats.ConfirmedSpins, Stats.Spins, activeKeyCount, activeKeyName)
+        farmTimeLbl.Text       = string.format("%dm %ds", math.floor(elapsed / 60), math.floor(elapsed % 60))
+        dashSpins.Text         = string.format("%d Confirmed / %d Fired", Stats.ConfirmedSpins, Stats.Spins)
+
+        -- Hết key (hoặc hết ticket) → thử AutoCombine trước khi stop
+        if not currentKt then
+            if Config.AutoCombineAfterFarm then
+                -- Xây danh sách cần combine: ticket key TRƯỚC, rồi mới selected keys
+                -- (CKC farm: ticket = Secret Key → cần combine Secret Key halves)
+                local combineQueue = {}
+                local seen = {}
+
+                -- Bước 1: tìm ticket key của từng selected key có halves
+                for _, farmKt in ipairs(KEY_TYPES) do
+                    if Config.SelectedKeys[farmKt.name] ~= false and farmKt.ticket then
+                        for _, tkt in ipairs(KEY_TYPES) do
+                            if tkt.full == farmKt.ticket and not seen[tkt.name] then
+                                local c = countsNow[tkt.name]
+                                if c and math.min(c.upper, c.lower) > 0 then
+                                    table.insert(combineQueue, tkt)
+                                    seen[tkt.name] = true
+                                end
+                            end
+                        end
+                    end
+                end
+
+                -- Bước 2: selected keys có halves (nếu chưa có trong queue)
+                for _, kt in ipairs(KEY_TYPES) do
+                    if Config.SelectedKeys[kt.name] ~= false and not seen[kt.name] then
+                        local c = countsNow[kt.name]
+                        if c and math.min(c.upper, c.lower) > 0 then
+                            table.insert(combineQueue, kt)
+                            seen[kt.name] = true
+                        end
+                    end
+                end
+
+                local combinedAny = #combineQueue > 0
+                for _, kt in ipairs(combineQueue) do
+                    local c = countsNow[kt.name]
+                    local canCombine = math.min(c.upper, c.lower)
+                    farmStatusLbl.Text = string.format("Combining %s x%d...", kt.name, canCombine)
+                    farmStatusLbl.TextColor3 = C_CYAN
+                    print(string.format("[KEY] AutoCombine %s: %d pairs | burst=%d threads", kt.name, canCombine, Config.ThreadCount))
+
+                    -- Bắn ThreadCount luồng song song, mỗi luồng combine 1
+                    local i = 0
+                    while i < canCombine do
+                        local batch = math.min(Config.ThreadCount, canCombine - i)
+                        for _ = 1, batch do
+                            task.spawn(function()
+                                pcall(function() Network.Invoke(kt.remote, 1) end)
+                            end)
+                        end
+                        i = i + batch
+                        task.wait(Config.BurstDelay)
+                    end
+                end
+
+                if combinedAny then
+                    task.wait(1.5)  -- đợi server xử lý
+                    countsNow = GetInventoryKeyCounts()
+                    currentKt = GetActiveFarmKey(countsNow)
+                    sharedKt = currentKt
+                end
+            end
+
+            if not currentKt then
+                Config.FarmEnabled = false
+                Stats.FarmSessionId = (Stats.FarmSessionId or 0) + 1
+                sharedKt = nil
+                farmStatusLbl.Text = "⛔ Stopped: No Keys Left!"
+                farmStatusLbl.TextColor3 = C_YELLOW
+                startFarmBtn.Text = "▶ START BURST FARM"
+                startFarmBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 50)
+                pcall(function() RunService:Set3dRenderingEnabled(true) end)
+                break
+            end
+        end
+
+        task.wait(0.5)
+    end
+
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
+end
+
+
+-- Button Listeners for Combine
+startCombineBtn.MouseButton1Click:Connect(function()
+    if Config.CombineEnabled then return end
+    Config.CombineEnabled = true
+    Stats.CombineStartTime = os.clock()
+    startCombineBtn.Text = "▶ COMBINING..."
+    startCombineBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    task.spawn(RunCombineLoop)
+end)
+
+stopCombineBtn.MouseButton1Click:Connect(function()
+    Config.CombineEnabled = false
+    startCombineBtn.Text = "▶ START COMBINE"
+    startCombineBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 50)
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
+end)
+
+-- Button Listeners for Farm
+startFarmBtn.MouseButton1Click:Connect(function()
+    if Config.FarmEnabled then return end
+    Config.FarmEnabled = true
+    Stats.FarmStartTime = os.clock()
+    Stats.Spins = 0
+    Stats.ConfirmedSpins = 0
+    farmStatusLbl.Text = "Farming..."
+    farmStatusLbl.TextColor3 = C_GREEN
+    startFarmBtn.Text = "▶ FARMING..."
+    startFarmBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    task.spawn(RunFarmLoop)
+end)
+
+stopFarmBtn.MouseButton1Click:Connect(function()
+    Config.FarmEnabled = false
+    Stats.FarmSessionId = (Stats.FarmSessionId or 0) + 1
+    farmStatusLbl.Text = "Stopped"
+    farmStatusLbl.TextColor3 = C_RED
+    startFarmBtn.Text = "▶ START BURST FARM"
+    startFarmBtn.BackgroundColor3 = Color3.fromRGB(35, 80, 50)
+    pcall(function() RunService:Set3dRenderingEnabled(true) end)
+end)
+
+-- Continuous Background Refresh Loop
+task.spawn(function()
+    while sg and sg.Parent do
+        pcall(function()
+            local counts = GetInventoryKeyCounts()
+            local totalFull = 0
+            for _, kt in ipairs(KEY_TYPES) do
+                local c = counts[kt.name]
+                if keyCombineRows[kt.name] then
+                    keyCombineRows[kt.name].Text = string.format("Upper: %d | Lower: %d (Can: %d)", c.upper, c.lower, math.min(c.upper, c.lower))
+                end
+                totalFull = totalFull + c.full
+            end
+            if dashInventory then
+                dashInventory.Text = string.format("%d Full Keys Available", totalFull)
+            end
+        end)
+        task.wait(3)
+    end
+end)
+
+-- Auto start farm if enabled
+if Config.AutoStartFarm then
+    task.spawn(function()
+        task.wait(1.5)
+        if not Config.FarmEnabled then
+            Config.FarmEnabled = true
+            Stats.FarmStartTime = os.clock()
+            Stats.Spins = 0
+            Stats.ConfirmedSpins = 0
+            farmStatusLbl.Text = "Farming..."
+            farmStatusLbl.TextColor3 = C_GREEN
+            startFarmBtn.Text = "▶ FARMING..."
+            startFarmBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+            task.spawn(RunFarmLoop)
+        end
+    end)
+end
+
+-- Synchronize UI from loaded Config
+pcall(function()
+    if SyncHopModeUI then SyncHopModeUI() end
+    if UpdateHopTimerLabel then UpdateHopTimerLabel() end
+    if autoCombineBtn then
+        local active = Config.AutoCombineAfterFarm ~= false
+        autoCombineBtn.Text = active and "🔄 Combine: ON" or "🔄 Combine: OFF"
+        autoCombineBtn.TextColor3 = active and C_GREEN or C_RED
+        autoCombineBtn.BackgroundColor3 = active and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+    end
+    if autoStartBtn then
+        local active = Config.AutoStartFarm == true
+        autoStartBtn.Text = active and "⚡ AutoStart: ON" or "⚡ AutoStart: OFF"
+        autoStartBtn.TextColor3 = active and C_GREEN or C_RED
+        autoStartBtn.BackgroundColor3 = active and Color3.fromRGB(35, 60, 45) or Color3.fromRGB(50, 30, 35)
+    end
+    if timeInputBox and FormatTimeDisplay then
+        timeInputBox.Text = FormatTimeDisplay(Config.HopInterval)
+    end
+end)
+
+print("🚀 TOTAL KEY HUB PRO Active! Auto Save & Config Sync Ready.")
+
