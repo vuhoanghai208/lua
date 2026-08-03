@@ -1,0 +1,2975 @@
+--[[
+    Pet Simulator 99 - Master Script: Event Part 2 (Garden / Pets vs. Coins)
+    File: E:\all_game_rbl\p99\Pets_vs_Coins\event_coin_p2.lua
+    Description: Script tổng tự động hóa toàn bộ tính năng Event Part 2 (THÊM THỬ LẠI CÁC Ô TRỐNG & LOG NGUYÊN NHÂN LỖI ĐẶT PET):
+                 - Auto Join Garden Event
+                 - Auto Harvest & Auto Plant Crops với Thuật toán ưu tiên Hạt Giống TỐT NHẤT
+                 - Auto Unlock Tất Cả Ô Đất Trồng Hạt (BD_Acquire từ 2..8)
+                 - Auto Check & Purge Hạt Cùi/Yếu (Nhổ cây cùi như Basic/Rare để thay bằng Hạt Xịn như Divine/Mythic/Ultimate/Chest)
+                 - Auto Buy Event Upgrades / Perks (Upgrades_Purchase - LOG CHI TIẾT TỪNG PERK)
+                 - Auto Unlock Lanes (PG_Widen & JC_Manifest)
+                 - Auto Buy Farming Merchant (Mua SẠCH SẼ toàn bộ 6 SLOTS cho đến khi HẾT HÀNG)
+                 - Auto Hatch Event Eggs (CustomEggs_Hatch)
+                 - Auto Event Rebirth (WK_Reclaim - Tự kích hoạt Rebirth Shrine Event với Cooldown 10s)
+                 - Auto Main Campaign Rebirth (Rebirth_Request)
+                 - Auto Combine Machine (GardenCombineMachine_StartCraft / Claim)
+                 - Auto Equip & Replace Defender Units (QUÉT TẤT CẢ CÁC Ô TRỐNG ĐẾN KHI ĐẶT THÀNH CÔNG PET VÀO LANE)
+                 - Auto Event Hatch Luck Boost (GardenChanceMachine_AddTime - TỰ ĐỘNG BOOST HUGE / TITANIC / GARGANTUAN LUCK)
+                 - Auto Consume Event XP Tokens & Garden Fertilizer Potions (Consumables_Consume - 2x Defender Damage)
+--]]
+
+-- ==========================================================================
+-- 1. CẤU HÌNH HỆ THỐNG (IN-MEMORY GLOBAL CONFIG)
+-- ==========================================================================
+
+local defaultConfig = {
+    ShowKaitunUI = true,       -- Bật Màn hình Kaitun Dashboard UI theo phong cách woodcutting.lua
+    AutoJoin = true,
+    AutoUnlockLanes = true,
+    AutoUnlockPlotBeds = true, -- Tự động mở tất cả các ô đất trồng hạt (BD_Acquire 2..8)
+    
+    -- TỐI ƯU CỰC ĐẠI CHO MÁY YẾU & MỌI EXECUTOR:
+    OptimizePerformance = true,   -- Xóa Map decor, xóa màu/textures/decals/particles, ép Quality Level 1
+    Disable3DRendering = false,   -- Đổi sang true nếu muốn TẮT HẲN 3D RENDERING MÀN HÌNH (tiết kiệm 95% CPU/GPU RAM)
+    
+    -- Tự động đặt Unit mạnh vào ô trống & Thay thế Unit yếu bằng Unit mạnh hơn từ túi
+    AutoPlaceDefenders = true,
+    AutoReplaceBetterDefenders = true,
+    AutoUpgradeDefenders = true,
+    
+    -- Tự động kích hoạt & gia hạn Boost Luck Hatch Event (Huge / Titanic / Gargantuan Luck)
+    AutoEventBoost = true,
+    
+    AutoFusePets = true, -- TỰ ĐỘNG GOM PET RÁC TRONG TÚI ĐỂ FUSE PET SANG PET MẠNH HƠN QUA REMOTE 'FuseMachine_Activate'
+    
+    AutoConsumeXPPotions = true, -- Tự động cắn Garden XP Tokens & Garden Fertilizer Potions (+2x Damage)
+    
+    -- TOÀN BỘ CÁC LOẠI THUỐC & BOOST EVENT GARDEN (TẮT HẾT — false = BẢO VỆ, không cắn):
+    -- Đặt lại thành true để cho phép auto-consume từng loại
+    AllowedPotions = {
+        -- 1. NHÓM FERTILIZER & DAMAGE:
+        ["Fertilizer"] = true,
+        ["Garden Fertilizer Potion"] = true,
+        ["Fertilizer II"] = false,
+        ["Fertilizer III"] = false,
+        ["Fertilizer IV"] = false,
+        
+        -- 2. NHÓM GARDEN SUNLIGHT & SPEED:
+        ["Garden Sunlight Potion"] = true,
+        ["Garden Sunlight Potion II"] = false,
+        ["Garden Sunlight Potion III"] = false,
+        ["Garden Speed Potion"] = true,
+        ["Garden Speed Potion II"] = false,
+        ["Garden Speed Potion III"] = false,
+        ["Garden Speed Potion IV"] = false,
+        
+        -- 3. NHÓM GARDEN RAIN & LUCK:
+        ["Garden Rain Potion"] = true,
+        ["Garden Rain Potion II"] = false,
+        ["Garden Rain Potion III"] = false,
+        ["Garden Luck Potion"] = true,
+        ["Garden Luck Potion II"] = false,
+        ["Garden Luck Potion III"] = false,
+        ["Garden Luck Potion IV"] = false,
+        
+        -- 4. NHÓM COIN BLOOM:
+        ["Garden Coin Bloom Potion"] = true,
+        ["Garden Coin Bloom Potion II"] = false,
+        ["Garden Coin Bloom Potion III"] = false,
+        ["Garden Coin Bloom Potion IV"] = false,
+        
+        -- 5. NHÓM GROWTH COCKTAIL:
+        ["Growth Cocktail I"] = false,
+        ["Growth Cocktail II"] = false,
+        ["Growth Cocktail III"] = false,
+        
+        -- 6. NHÓM TOKEN XP:
+        ["Garden XP Token"] = true,
+        ["Pet XP Token"] = true,
+        ["Tower Defense I"] = true
+    },
+    AutoHarvestCrops = true,
+    AutoPlantSeeds = true,
+    
+    -- Tự động nhổ cây cùi trên ô đất nếu trong túi có Hạt Xịn hơn
+    AutoPurgeLowTierCrops = true,
+    
+    -- BẢNG CẤU HÌNH CÔNG TẮC BOOLEAN BẢO VỆ PHẨM CHẤT HẠT GIỐNG (SEED RARITY):
+    -- true  = GIỮ LẠI BẢO VỆ 100% (Không bao giờ nhổ ô đất mọc hạt/cây có phẩm chất này)
+    -- false = CHO PHÉP NHỔ BỎ (Nếu trong túi có Hạt Giống phẩm chất xịn hơn)
+    ProtectedSeedRarities = {
+        ["Chest"] = true,        -- Chest (Rank 7): GIỮ 100%
+        ["Ultimate"] = true,     -- Ultimate (Rank 6): GIỮ 100%
+        ["Mythic"] = true,       -- Mythic (Rank 5): GIỮ 100%
+        ["Celestial"] = true,    -- Celestial (Phẩm chất/Biến thể Siêu Hiếm): GIỮ 100%
+        ["Divine"] = true,       -- Divine (Rank 4): GIỮ 100%
+        ["Exotic"] = true,       -- Exotic (Rank 3): GIỮ 100%
+        ["Rare"] = false,        -- Rare (Rank 2): Cho phép nhổ để gieo Hạt xịn hơn
+        ["Basic"] = false        -- Basic (Rank 1): Cho phép nhổ để gieo Hạt xịn hơn
+    },
+    
+    -- BẢNG CẤU HÌNH DÒNG BẢO VỆ MÔ HÌNH NÔNG SẢN THU HOẠCH (BOOLEAN):
+    ProtectedCrops = {
+        ["Chest"] = true,        -- Chest / Chest Seed (Rank 7): GIỮ 100%
+        ["Large Chest"] = true,  -- Large Chest (Rương Lớn): GIỮ 100%
+        ["Medium Chest"] = true, -- Medium Chest (Rương Vừa): GIỮ 100%
+        ["Small Chest"] = true,  -- Small Chest (Rương Nhỏ): GIỮ 100%
+        ["Ultimate"] = true,     -- Ultimate / Ultimate Seed (Rank 6): GIỮ 100%
+        ["Mythic"] = true,       -- Mythic / Mythic Seed (Rank 5): GIỮ 100%
+        ["Divine"] = true,       -- Divine / Divine Seed (Rank 4): GIỮ 100%
+        ["Exotic"] = true,       -- Exotic / Exotic Seed (Rank 3): GIỮ 100%
+        ["Large Bag"] = true,    -- Large Bag (Rank 3): GIỮ 100%
+        ["Epic Gift"] = false,    -- Epic Gift (Rank 3): GIỮ 100%
+        ["Medium Bag"] = false,  -- Medium Bag (Rank 2): Cho phép nhổ để gieo Hạt xịn hơn
+        ["Gift"] = false,        -- Gift (Rank 2): Cho phép nhổ để gieo Hạt xịn hơn
+        ["Small Bag"] = false,   -- Small Bag (Rank 1): Cho phép nhổ để gieo Hạt xịn hơn
+        ["Sunflower"] = false,   -- Sunflower (Rank 1): Cho phép nhổ để gieo Hạt xịn hơn
+        ["Basic"] = false        -- Basic (Rank 1): Cho phép nhổ để gieo Hạt xịn hơn
+    },
+    
+    -- Chế độ gieo hạt: "Highest" (Ưu tiên hạt xịn nhất) hoặc "Lowest"
+    SeedPriorityMode = "Highest",
+    
+    AutoBuyMerchant = true,
+    AutoHatchEggs = true,
+    MinHatchAmount = nil,        -- Số lượng trứng tối thiểu để ấp (nil = Tự động ấp số lượng tối đa theo túi tiền, phù hợp cả acc mới có 1 slot hoặc acc max 84 slots)
+    HatchInterval = 180,       -- Delay giữa các đợt Ấp trứng (3 phút = 180s) để tích tiền cày Upgrades & Nâng Level Pet tháp
+    FastHatchInterval = 5,     -- Delay Ấp trứng siêu tốc (5s) khi đã Max Perk & Max Level Tháp Pet
+    AutoBuyUpgrades = true,
+    
+    -- Tự động Rebirth (Event Rebirth Shrine & Main Campaign Rebirth)
+    AutoRegrow = true,
+    AutoCampaignRebirth = true,
+    -- Giới hạn số lần Super Rebirth (WK_Reclaim thành công): 0 = không giới hạn, 2 = chỉ rebirth 2 lần rồi dừng
+    SuperRebirthLimit = 0,
+    
+    AutoCombine = false,
+    
+    -- BẢNG CẤU HÌNH CÔNG TẮC BOOLEAN BẬT/TẮT CHO TỪNG BẬC GHÉP PET (COMBINE MACHINE):
+    -- true  = Cho phép ghép Bậc này
+    -- false = Dừng ghép Bậc này (dùng khi muốn giữ Pet Huge trong túi để mang ra Trading Plaza bán)
+    CombineRecipes = {
+        ["Titanic"] = false,  -- Titanic Blossom Kitsune
+        ["Huge3"] = false,    -- Huge Broccoli Dino
+        ["Huge2"] = false,    -- Huge Tomato Turtle
+        ["Huge1"] = false     -- Huge Garlic Chick
+    },
+    
+    AutoOpenGifts = false,                  -- Tự động mở sạch sẽ các Hộp Quà/Gifts trong túi (Sunflower Gift, Gift, Epic Gift) để lấy Item/Cocktails
+    
+    -- DISCORD WEBHOOK ALERTS (THÔNG BÁO DISCORD KHI HATCH/COMBINE HUGES HOẶC KHI NHẬN HẠT GIỐNG/VẬT PHẨM +1 INVEN):
+    WebhookURL = "https://discord.com/api/webhooks/1397922298501005433/GEYiKwB5LYJ2zP5k9EZDMrNeE2Hl6tJKSjZsi4q1-prT7PW-49ylG61Orx_dR73DgDaf",                       -- Dán Discord Webhook URL vào đây để nhận thông báo
+    WebhookNotifyHuges = true,             -- Tự động gửi Webhook khi nhận Huge / Titanic / Gargantuan Pet
+    WebhookNotifyItems = true,             -- Tự động gửi Webhook khi nhận thêm (+1 Inven) các vật phẩm/hạt giống đã cài đặt
+    WebhookTrackedItems = {                -- CHỈ BẮN WEBHOOK CHO GARDEN GROWTH COCKTAIL / GROWTH COCKTAIL (HẠT GIỐNG ĐÃ TẮT THEO YÊU CẦU):
+        ["Garden Growth Cocktail"] = true,
+        ["Garden Growth Cocktail I"] = true,
+        ["Garden Growth Cocktail II"] = true,
+        ["Garden Growth Cocktail III"] = true,
+        ["Garden Growth Cocktail IV"] = true,
+        ["Growth Cocktail"] = true,
+        ["Growth Cocktail I"] = true,
+        ["Growth Cocktail II"] = true,
+        ["Growth Cocktail III"] = true,
+        ["Growth Cocktail IV"] = true
+    },
+    
+    EggName = nil, -- Set string tên trứng hoặc nil để tự hatch trứng cao nhất
+    HatchAmount = nil, -- Set nil để TỰ ĐỘNG MỞ MAX SỐ TRỨNG TỐI ĐA (Max Egg Count của người chơi)
+    FastHatchInterval = 5, -- Delay hatch trứng khi đã max Upgrades & Defenders (chỉnh 5s theo yêu cầu)
+    HideEggModels = true, -- TỰ ĐỘNG ẨN 100% MÔ HÌNH 3D TRỨNG KHI HATCH ĐỂ TẮT LAG FPS
+    Interval = 1.5,
+    VerboseDebug = true -- FULL LOGGING MODE
+}
+getgenv().EventCoinP2Config = defaultConfig
+local Config = getgenv().EventCoinP2Config
+getgenv().EventP2 = {}
+local EventP2 = getgenv().EventP2
+
+local function debugLog(...)
+    if Config.VerboseDebug then
+        local timestamp = os.date("%H:%M:%S")
+        print(("[%s] [PvC Event P2]:"):format(timestamp), ...)
+    end
+end
+
+local function formatNumber(n)
+    n = tonumber(n) or 0
+    local formatted = tostring(math.floor(n))
+    while true do
+        local k
+        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if k == 0 then break end
+    end
+    return formatted
+end
+
+local function formatCompactNumber(n)
+    n = tonumber(n) or 0
+    if n >= 1e15 then
+        return string.format("%.2fQ", n / 1e15)
+    elseif n >= 1e12 then
+        return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then
+        return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then
+        return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then
+        return string.format("%.2fK", n / 1e3)
+    else
+        return tostring(math.floor(n))
+    end
+end
+
+-- ==========================================================================
+-- WAIT FOR GAME & PLAYER DATA TO FULLY LOAD
+-- ==========================================================================
+if not game:IsLoaded() then
+    print("⏳ [WAIT LOAD] Đang chờ Game tải hoàn tất (game:IsLoaded)...")
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    repeat task.wait(0.5) until Players.LocalPlayer
+    LocalPlayer = Players.LocalPlayer
+end
+
+if not LocalPlayer:FindFirstChild("PlayerGui") then
+    LocalPlayer:WaitForChild("PlayerGui", 30)
+end
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Library = ReplicatedStorage:WaitForChild("Library", 30)
+if Library then
+    Library:WaitForChild("Client", 30)
+    pcall(function()
+        local Save = require(Library.Client.Save)
+        local retries = 0
+        while retries < 30 and (not Save.Get() or not Save.Get().Inventory) do
+            retries = retries + 1
+            task.wait(0.5)
+        end
+    end)
+end
+
+print("[LOAD] Game & player data loaded successfully!")
+
+debugLog("==========================================================================")
+debugLog("[ENGINE] Master Event Part 2 Engine Active")
+debugLog("==========================================================================")
+
+-- ==========================================================================
+-- 2. KHỞI TẠO FRAMEWORK & MODULES
+-- ==========================================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+
+local Library = ReplicatedStorage:WaitForChild("Library")
+local Client = Library:WaitForChild("Client")
+
+local Network = require(Client:WaitForChild("Network"))
+local Save = require(Client:WaitForChild("Save"))
+local Signal = require(Library:WaitForChild("Signal"))
+local InstancingCmds = require(Client:WaitForChild("InstancingCmds"))
+
+-- ==========================================================================
+-- 2.5. HỆ THỐNG ANTI-AFK CHUYÊN SÂU (4-LAYER BULLETPROOF ANTI-AFK ENGINE)
+-- ==========================================================================
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- Layer 1: Disable Roblox Idled connections
+pcall(function()
+    if getconnections then
+        for _, conn in ipairs(getconnections(LocalPlayer.Idled)) do
+            if conn.Disable then
+                conn:Disable()
+            elseif conn.Disconnect then
+                conn:Disconnect()
+            end
+        end
+    end
+end)
+
+-- Layer 2: Intercept Idled signal with VirtualInputManager & VirtualUser
+pcall(function()
+    LocalPlayer.Idled:Connect(function()
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+            task.wait(0.05)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+        end)
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end)
+end)
+
+-- Layer 3: Periodic Input Pulse & Auto Jump (Every 60 seconds)
+task.spawn(function()
+    while true do
+        task.wait(60)
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+            task.wait(0.05)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+        end)
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+        pcall(function()
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                hum.Jump = true
+                hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end)
+    end
+end)
+
+-- Layer 4: Micro Physics Nudge (Every 120 seconds)
+task.spawn(function()
+    while true do
+        task.wait(120)
+        pcall(function()
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = hrp.CFrame * CFrame.new(0, 0.001, 0)
+            end
+        end)
+    end
+end)
+
+debugLog("[ANTI-AFK] 4-Layer Bulletproof Anti-AFK Engine Initialized")
+
+-- Optional Modules với Pcall An Toàn
+local ClientPlot, GardenPlots, ClientTowerDefense, ClientTower, Items, GardenSeedLadder, GardenDefenders, CurrencyCmds, TowerItem, XPPotionCmds, RebirthCmds, TowerDefenseTowers, EventUpgradeCmds, Save, Types
+pcall(function() ClientPlot = require(Client:WaitForChild("PlotCmds"):WaitForChild("ClientPlot")) end)
+pcall(function() GardenPlots = require(Library:WaitForChild("Util"):WaitForChild("GardenPlots")) end)
+pcall(function() ClientTowerDefense = require(Client:WaitForChild("PvCombatCmds"):WaitForChild("ClientTowerDefense")) end)
+pcall(function() ClientTower = require(Client:WaitForChild("PvCombatCmds"):WaitForChild("ClientTowerDefense"):WaitForChild("EntityRegistry"):WaitForChild("ClientTower")) end)
+pcall(function() Items = require(Library:WaitForChild("Items")) end)
+pcall(function() GardenSeedLadder = require(Library:WaitForChild("Util"):WaitForChild("GardenSeedLadder")) end)
+pcall(function() GardenDefenders = require(Library:WaitForChild("Util"):WaitForChild("GardenDefenders")) end)
+pcall(function() CurrencyCmds = require(Client:WaitForChild("CurrencyCmds")) end)
+pcall(function() TowerItem = require(Library:WaitForChild("Items"):WaitForChild("TowerItem")) end)
+pcall(function() XPPotionCmds = require(Client:WaitForChild("XPPotionCmds")) end)
+pcall(function() RebirthCmds = require(Client:WaitForChild("RebirthCmds")) end)
+pcall(function() TowerDefenseTowers = require(Library:WaitForChild("Directory"):WaitForChild("TowerDefenseTowers")) end)
+pcall(function() EventUpgradeCmds = require(Client:WaitForChild("EventUpgradeCmds")) end)
+pcall(function() Save = require(Client:WaitForChild("Save")) end)
+pcall(function() Types = require(Library:WaitForChild("Items"):WaitForChild("Types")) end)
+
+local INSTANCE_NAME = "Garden"
+
+-- Bảng theo dõi Cooldown bảo vệ ô đất vừa được gieo hạt
+local bedPlantedCooldown = {}
+
+-- Bảng xếp hạng Hạt Giống & Nông sản/Quà từ Xịn nhất -> Thấp nhất
+local SEED_RANK = {
+    ["Chest Seed"] = 7, ["Chest"] = 7, ["Plasma Seed"] = 7, ["Plasma"] = 7,
+    ["Small Chest"] = 7, ["Medium Chest"] = 7, ["Large Chest"] = 7,
+    ["Ultimate Seed"] = 6, ["Ultimate"] = 6,
+    ["Mythic Seed"] = 5, ["Mythic"] = 5,
+    ["Divine Seed"] = 4, ["Divine"] = 4, ["Glitch Seed"] = 4, ["Glitch"] = 4,
+    ["Exotic Seed"] = 3, ["Exotic"] = 3,
+    ["Rare Seed"] = 2, ["Rare"] = 2,
+    ["Basic Seed"] = 1, ["Basic"] = 1,
+    ["Epic Gift"] = 4,
+    ["Gift"] = 3,
+    ["Large Bag"] = 4,
+    ["Medium Bag"] = 3,
+    ["Small Bag"] = 2,
+    ["Sunflower"] = 1
+}
+
+-- Helper chọn Hạt Giống tốt nhất
+local function pickBestSeed(allSeeds, mode)
+    if not allSeeds or #allSeeds == 0 then return nil end
+    
+    local seedsCopy = {}
+    for _, s in ipairs(allSeeds) do
+        table.insert(seedsCopy, s)
+    end
+    
+    table.sort(seedsCopy, function(a, b)
+        local idA = a.GetId and a:GetId() or ""
+        local idB = b.GetId and b:GetId() or ""
+        local rankA = SEED_RANK[idA] or 0
+        local rankB = SEED_RANK[idB] or 0
+        if mode == "Lowest" then
+            return rankA < rankB
+        else
+            return rankA > rankB
+        end
+    end)
+    
+    return seedsCopy[1]
+end
+
+-- Helper lấy Sunflower hiện có
+local function getSunflowers()
+    local amt = 0
+    pcall(function()
+        if CurrencyCmds and CurrencyCmds.Get then
+            amt = CurrencyCmds.Get("Sunflowers") or 0
+        end
+    end)
+    if not amt or amt == 0 then
+        pcall(function()
+            local saveData = Save.Get and Save.Get()
+            local inv = saveData and saveData.Inventory
+            if inv and inv.Currency then
+                for _, itemData in pairs(inv.Currency) do
+                    if type(itemData) == "table" and (itemData.id == "Sunflowers" or itemData._id == "Sunflowers") then
+                        amt = tonumber(itemData._am or itemData.amount or itemData._c or 0) or 0
+                        break
+                    end
+                end
+            end
+            if (not amt or amt == 0) and saveData and saveData.Currency then
+                amt = tonumber(saveData.Currency.Sunflowers or 0) or 0
+            end
+        end)
+    end
+    return amt or 0
+end
+
+-- Helper lấy Cấp Rebirth Event (Garden Event Campaign Rebirth)
+local function getRebirthLevel()
+    local lvl = 0
+    
+    -- 1. Ưu tiên 1: Đọc từ Plot Save Data ("PvC_Regrows")
+    pcall(function()
+        local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+        if localPlot and localPlot.Save then
+            local r = localPlot:Save("PvC_Regrows")
+            if type(r) == "number" then
+                lvl = r
+            end
+        end
+    end)
+    
+    if lvl and lvl > 0 then return lvl end
+    
+    -- 2. Ưu tiên 2: Đọc trực tiếp từ GUI Event UI (PlayerGui.InstanceQuests.Frame.Top.Rebirth)
+    pcall(function()
+        local player = game.Players.LocalPlayer
+        local playerGui = player and player:FindFirstChild("PlayerGui")
+        local instanceQuests = playerGui and playerGui:FindFirstChild("InstanceQuests")
+        if instanceQuests and instanceQuests:FindFirstChild("Frame") then
+            local top = instanceQuests.Frame:FindFirstChild("Top")
+            local rebirthElem = top and top:FindFirstChild("Rebirth")
+            if rebirthElem then
+                local txt = ""
+                if rebirthElem:IsA("TextLabel") or rebirthElem:IsA("TextButton") then
+                    txt = rebirthElem.Text
+                else
+                    local label = rebirthElem:FindFirstChildOfClass("TextLabel")
+                    if label then txt = label.Text end
+                end
+                
+                if type(txt) == "string" and txt ~= "" then
+                    local numStr = string.match(txt, "Rebirth%s*(%d+)")
+                    if numStr then
+                        lvl = tonumber(numStr) or 0
+                    end
+                end
+            end
+        end
+    end)
+    
+    if lvl and lvl > 0 then return lvl end
+    
+    -- 3. Ưu tiên 3: Đọc key Event Regrow trong saveData
+    pcall(function()
+        local saveData = Save and Save.Get and Save.Get()
+        if saveData then
+            lvl = tonumber(saveData.PvC_Regrow or saveData.PvC_RegrowLevel or saveData.GardenRegrow or saveData.RegrowLevel or 0) or 0
+        end
+    end)
+    
+    return lvl or 0
+end
+
+-- Helper đếm tổng số Sunflower Gift trong túi đồ
+local function GetSunflowerGiftsCount()
+    local sunGifts = 0
+    pcall(function()
+        local saveData = Save.Get and Save.Get()
+        local inv = saveData and saveData.Inventory
+        if inv then
+            local dicts = { inv.Lootbox, inv.Consumable, inv.Misc, inv.Pet }
+            for _, dict in ipairs(dicts) do
+                if type(dict) == "table" then
+                    for uid, itemData in pairs(dict) do
+                        if type(itemData) == "table" then
+                            local itemId = tostring(itemData.id or itemData._id or "")
+                            local amt = tonumber(itemData._am or itemData.amount or itemData._c or 1) or 1
+                            if itemId:find("Sunflower Gift") or itemId:find("Gift") then
+                                sunGifts = sunGifts + amt
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    return sunGifts
+end
+
+-- HELPER GỬI DISCORD WEBHOOK VỚI ICON URL BIG GAMES API
+local function parseAssetId(icon)
+    if not icon then return "" end
+    return tostring(icon):match("%d+") or ""
+end
+
+function EventP2.SendDiscordWebhook(arg1, arg2, arg3, arg4, arg5)
+    if not Config.WebhookURL or Config.WebhookURL == "" or Config.WebhookURL:find("PASTE_YOUR_WEBHOOK") then
+        debugLog("[WEBHOOK] Webhook URL not configured.")
+        return
+    end
+
+    local httpReq = (syn and syn.request) or (http and http.request) or http_request or request or httpRequest
+    if not httpReq then
+        warn("⚠️ [WEBHOOK ERROR] Executor does not support HTTP requests!")
+        return
+    end
+
+    local itemName, itemCategory, assetId, extraDetails
+    if arg5 ~= nil then
+        itemName = arg2
+        itemCategory = arg3
+        assetId = arg4
+        extraDetails = arg5
+    else
+        itemName = arg1
+        itemCategory = arg2
+        assetId = arg3
+        extraDetails = arg4
+    end
+
+    local cleanAssetId = parseAssetId(assetId)
+    local iconUrl = cleanAssetId ~= "" 
+        and ("https://biggamesapi.io/image/" .. cleanAssetId) 
+        or "https://biggamesapi.io/image/110514491848115"
+
+    local isSpecial = tostring(itemName):find("Huge") or tostring(itemName):find("Titanic") or tostring(itemName):find("Gargantuan") or tostring(itemName):find("Mythic") or tostring(itemName):find("Ultimate")
+    local embedColor = isSpecial and 0xFFD700 or 0x00FF88
+
+    local embed = {
+        title = string.format("📦 %s", tostring(itemName)),
+        color = embedColor,
+        fields = {
+            { name = "👤 Player", value = "`" .. (LocalPlayer and LocalPlayer.Name or "Player") .. "`", inline = true },
+            { name = "📂 Category", value = "`" .. tostring(itemCategory) .. "`", inline = true }
+        },
+        thumbnail = { url = iconUrl },
+        footer = {
+            text = "Pet Simulator 99 • Event Part 2 Notifier"
+        },
+        timestamp = DateTime.now():ToIsoDate()
+    }
+    
+    if extraDetails and extraDetails ~= "" then
+        embed.fields[#embed.fields + 1] = { name = "📊 Details", value = extraDetails, inline = false }
+    end
+    
+    embed.fields[#embed.fields + 1] = { name = "🕒 Time", value = "<t:" .. os.time() .. ":R>", inline = true }
+
+    local HttpService = game:GetService("HttpService")
+    local payloadTable = {
+        username = "PS99 Event Notifier 🤖",
+        avatar_url = "https://biggamesapi.io/image/110514491848115",
+        embeds = { embed }
+    }
+
+    if Config.DiscordTagID and tostring(Config.DiscordTagID) ~= "" and isSpecial then
+        payloadTable.content = "<@" .. tostring(Config.DiscordTagID) .. ">"
+    end
+
+    local bodyData = HttpService:JSONEncode(payloadTable)
+
+    task.spawn(function()
+        local ok, res = pcall(httpReq, {
+            Url = Config.WebhookURL,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = bodyData
+        })
+
+        if ok and res then
+            local code = res.StatusCode or res.Status or 0
+            if code == 200 or code == 204 then
+                debugLog("[WEBHOOK SUCCESS] Sent notification to Discord for item:", tostring(itemName))
+            else
+                warn(string.format("[WEBHOOK ERROR] Status Code: %s | Response: %s", tostring(code), tostring(res.Body or "")))
+            end
+        else
+            warn("[WEBHOOK ERROR] HTTP Request failed:", tostring(res))
+        end
+    end)
+end
+
+function EventP2.TestWebhook()
+    debugLog("[WEBHOOK TEST] Sending test notification to Discord...")
+    EventP2.SendDiscordWebhook(
+        "🎉 [TEST] DISCORD WEBHOOK CONNECTED!",
+        "Mythic Seed",
+        "CropSeed",
+        "1785607502",
+        "✨ **Status:** Webhook Connection Working 100%! Logged on script initialization."
+    )
+end
+
+-- LOGIC THEO DÕI TÚI ĐỒ (+1 ITEM INVENTORY WEBHOOK TRIGGER - TỰ ĐỘNG LẤY ICON & PHÁT HIỆN UID MỚI)
+getgenv()._LastInventoryCounts = {}
+local lastInventoryCounts = getgenv()._LastInventoryCounts
+local isFirstInventoryScan = true
+
+function EventP2.TrackInventoryWebhooks()
+    if not Config.WebhookURL or Config.WebhookURL == "" then return end
+    if not Config.WebhookNotifyHuges and not Config.WebhookNotifyItems then return end
+
+    pcall(function()
+        local saveData = Save.Get and Save.Get()
+        local inv = saveData and saveData.Inventory
+        if not inv then return end
+
+        local DirectoryModule = nil
+        pcall(function() DirectoryModule = require(Client:WaitForChild("Directory")) end)
+
+        local categories = { 
+            { dict = inv.Pet, cat = "Pet" }, 
+            { dict = inv.Lootbox, cat = "Lootbox" }, 
+            { dict = inv.CropSeed, cat = "CropSeed" }, 
+            { dict = inv.Seed, cat = "Seed" }, 
+            { dict = inv.Consumable, cat = "Consumable" }, 
+            { dict = inv.Potion, cat = "Potion" },
+            { dict = inv.Misc, cat = "Misc" }
+        }
+        
+        local currentTotals = {}
+        local itemInfoMap = {}
+
+        for _, catInfo in ipairs(categories) do
+            local categoryDict = catInfo.dict
+            local catName = catInfo.cat
+            
+            if type(categoryDict) == "table" then
+                for uid, itemData in pairs(categoryDict) do
+                    if type(itemData) == "table" then
+                        local uStr = tostring(uid)
+                        local itemId = tostring(itemData.id or itemData._id or "")
+                        local itemQty = tonumber(itemData._am or itemData.amount or itemData._c or 1) or 1
+                        local itemClass = itemData.class or itemData._class or catName
+                        local isShiny = itemData.sh or itemData.shiny or itemData._sh
+                        local tier = tonumber(itemData.tn or itemData.tier or itemData.Tier) or 1
+                        
+                        local displayName = itemId
+                        
+                        -- Lấy tên chính chủ từ game Items API hoặc Directory Tiers
+                        if Items and Items.From then
+                            pcall(function()
+                                local itemObj = Items.From(itemData)
+                                if itemObj and itemObj.GetName then
+                                    local officialName = itemObj:GetName()
+                                    if officialName and officialName ~= "" then
+                                        displayName = officialName
+                                    end
+                                end
+                            end)
+                        end
+                        
+                        if displayName == itemId and DirectoryModule then
+                            pcall(function()
+                                local possibleCategories = { catName .. "s", catName, "Consumables", "Potions", "CropSeeds" }
+                                for _, catKey in ipairs(possibleCategories) do
+                                    if DirectoryModule[catKey] and DirectoryModule[catKey][itemId] then
+                                        local entry = DirectoryModule[catKey][itemId]
+                                        if entry.Tiers and entry.Tiers[tier] and entry.Tiers[tier].Name then
+                                            displayName = entry.Tiers[tier].Name
+                                            break
+                                        elseif entry.Name then
+                                            displayName = entry.Name
+                                            break
+                                        end
+                                    end
+                                end
+                            end)
+                        end
+                        
+                        if (catName == "CropSeed" or catName == "Seed") and not displayName:find("Seed") then
+                            displayName = displayName .. " Seed"
+                        end
+                        
+                        if tier > 1 and not displayName:find("II") and not displayName:find("III") and not displayName:find("IV") then
+                            local romanTiers = { "I", "II", "III", "IV", "V" }
+                            local roman = romanTiers[tier] or tostring(tier)
+                            displayName = displayName .. " " .. roman
+                        end
+                        
+                        if isShiny then
+                            displayName = "Shiny " .. displayName
+                        end
+                        
+                        -- Tự động tra cứu Icon 3-Layer chuẩn đét 100%
+                        local itemIcon = itemData.icon or itemData._icon or itemData.Icon or ""
+                        
+                        if (not itemIcon or itemIcon == "") and Items and Items.From then
+                            pcall(function()
+                                local itemObj = Items.From(itemData)
+                                if itemObj and itemObj.GetIcon then itemIcon = itemObj:GetIcon() end
+                            end)
+                        end
+                        
+                        if (not itemIcon or itemIcon == "") and DirectoryModule then
+                            pcall(function()
+                                local possibleCategories = {
+                                    catName .. "s", catName,
+                                    (catName == "CropSeed") and "CropSeeds" or nil,
+                                    (catName == "CropSeed") and "Seeds" or nil,
+                                    (catName == "Consumable") and "Consumables" or nil,
+                                    (catName == "Potion") and "Potions" or nil,
+                                    (catName == "Pet") and "Pets" or nil,
+                                    (catName == "Misc") and "Misc" or nil
+                                }
+                                
+                                for _, catKey in ipairs(possibleCategories) do
+                                    if catKey and DirectoryModule[catKey] then
+                                        local dict = DirectoryModule[catKey]
+                                        local entry = dict[itemId]
+                                        if entry then
+                                            if type(entry.Icon) == "string" then
+                                                itemIcon = entry.Icon
+                                            elseif type(entry.Icon) == "function" then
+                                                local ok, res = pcall(entry.Icon, itemData)
+                                                if ok and res then itemIcon = tostring(res) end
+                                            elseif entry.icon then
+                                                itemIcon = tostring(entry.icon)
+                                            end
+                                            if itemIcon ~= "" then break end
+                                        end
+                                    end
+                                end
+                            end)
+                        end
+                        
+                        if not itemIcon or itemIcon == "" or itemIcon == "nil" then
+                            local staticIcons = {
+                                ["Garden Growth Cocktail"] = "110514491848115",
+                                ["Growth Cocktail"] = "110514491848115",
+                                ["Mythic Seed"] = "80349803460908",
+                                ["Mythic"] = "80349803460908",
+                                ["Ultimate Seed"] = "109074321295822",
+                                ["Ultimate"] = "109074321295822",
+                                ["Divine Seed"] = "128208618928812",
+                                ["Divine"] = "128208618928812",
+                                ["Exotic Seed"] = "102551878693423",
+                                ["Exotic"] = "102551878693423",
+                                ["Rare Seed"] = "111757558648944",
+                                ["Rare"] = "111757558648944",
+                                ["Basic Seed"] = "115826407841293",
+                                ["Basic"] = "115826407841293"
+                            }
+                            itemIcon = staticIcons[itemId] or staticIcons[itemId .. " Seed"] or ""
+                        end
+                        
+                        -- Theo dõi Huge Pets theo UID
+                        local isHuge = itemId:find("Huge") or itemId:find("Titanic") or itemId:find("Gargantuan")
+                        if isHuge then
+                            if not isFirstInventoryScan and not lastInventoryCounts["UID_" .. uStr] and Config.WebhookNotifyHuges then
+                                EventP2.SendDiscordWebhook(
+                                    displayName,
+                                    "Huge / Special Pet",
+                                    itemIcon,
+                                    string.format("✨ **Amount Gained:** `+1` | 🚀 **Total Inven:** `%d`", itemQty)
+                                )
+                            end
+                            lastInventoryCounts["UID_" .. uStr] = true
+                        else
+                            -- Gom tổng số lượng các item thường theo displayName
+                            currentTotals[displayName] = (currentTotals[displayName] or 0) + itemQty
+                            itemInfoMap[displayName] = {
+                                itemId = itemId,
+                                itemClass = itemClass,
+                                itemIcon = itemIcon
+                            }
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- LẦN QUÉT ĐẦU TIÊN: Ghi nhận tổng số lượng ban đầu của tất cả các item
+        if isFirstInventoryScan then
+            for name, total in pairs(currentTotals) do
+                lastInventoryCounts[name] = total
+                local isTracked = Config.WebhookTrackedItems and (Config.WebhookTrackedItems[name] or Config.WebhookTrackedItems[itemInfoMap[name] and itemInfoMap[name].itemId])
+                if isTracked or name:lower():find("cocktail") then
+                    print(string.format("📡 [WEBHOOK BASELINE] Item: %s | Baseline Total: %d", name, total))
+                end
+            end
+            isFirstInventoryScan = false
+            print("🔔 [WEBHOOK TRACKER] Inventory baseline captured! Monitoring for real-time item drops...")
+        else
+            -- CÁC LẦN QUÉT SAU: Kiểm tra sự tăng tổng số lượng của từng item (ví dụ: từ 7 -> 10)
+            for name, currentTotal in pairs(currentTotals) do
+                local prevTotal = lastInventoryCounts[name] or 0
+                local info = itemInfoMap[name]
+                
+                local isTracked = false
+                if Config.WebhookNotifyItems and info then
+                    if Config.WebhookTrackedItems and (Config.WebhookTrackedItems[info.itemId] or Config.WebhookTrackedItems[name]) then
+                        isTracked = true
+                    else
+                        local lowerId = info.itemId:lower()
+                        local lowerName = name:lower()
+                        if lowerId:find("cocktail") or lowerName:find("cocktail") then
+                            isTracked = true
+                        end
+                    end
+                end
+
+                if isTracked and currentTotal ~= prevTotal then
+                    print(string.format("🔍 [WEBHOOK DEBUG] Item: %s | Prev: %d ➔ Current: %d", name, prevTotal, currentTotal))
+                end
+
+                if currentTotal > prevTotal then
+                    local gained = currentTotal - prevTotal
+                    
+                    print(string.format("🚀 [WEBHOOK TRIGGER] %s | Gained: +%d | Total: %d", name, gained, currentTotal))
+                    
+                    if isTracked then
+                        EventP2.SendDiscordWebhook(
+                            name,
+                            info.itemClass,
+                            info.itemIcon,
+                            string.format("✨ **Amount Gained:** `+%d` | 🚀 **Total Inven:** `%d`", gained, currentTotal)
+                        )
+                    end
+                end
+                lastInventoryCounts[name] = currentTotal
+            end
+        end
+    end)
+end
+
+-- BẢNG SỨC MẠNH THEO ROSTER CHUẨN CỦA GAME (GARDENDEFENDERS.ROSTER)
+local ROSTER_POWER = {}
+if GardenDefenders and GardenDefenders.Roster then
+    for rank, name in ipairs(GardenDefenders.Roster) do
+        ROSTER_POWER[name] = rank
+    end
+else
+    local defaultRoster = {
+        "Garlic Chick", "Tomato Turtle", "Carrot Crocodile", "Broccoli Dino", "Turnip Hamster",
+        "Potted Puppy", "Watering Can Elephant", "Lotus Otter", "Paradise Phoenix", "Rose Wolf",
+        "Bloom Wyrm", "Garden Golem", "Leek Lizard", "Beet Beaver", "Artichoke Armadillo",
+        "Chili Chinchilla", "Zucchini Zebra", "Blossom Kitsune", "Corn Minotaur", "Wistera Wyvern"
+    }
+    for rank, name in ipairs(defaultRoster) do
+        ROSTER_POWER[name] = rank
+    end
+end
+
+-- HELPER TÍNH SỨC MẠNH DPS CHUẨN CỦA UNIT DỰA TRÊN ROSTER CHUẨN + LEVEL + VARIANTS (HUGE / TITANIC / SHINY / RAINBOW)
+local function getUnitPower(id, lvl, itemData)
+    if not id then return 1 end
+    lvl = lvl or 1
+    
+    local strId = tostring(id)
+    local isHuge = strId:find("Huge") or (itemData and type(itemData) == "table" and itemData.id and tostring(itemData.id):find("Huge"))
+    local isTitanic = strId:find("Titanic") or (itemData and type(itemData) == "table" and itemData.id and tostring(itemData.id):find("Titanic"))
+    local isShiny = strId:find("Shiny") or (itemData and type(itemData) == "table" and itemData.sh)
+    local isRainbow = strId:find("Rainbow") or (itemData and type(itemData) == "table" and itemData.pt == 2)
+    local isGolden = strId:find("Golden") or (itemData and type(itemData) == "table" and itemData.pt == 1)
+    
+    local rank = ROSTER_POWER[id]
+    if not rank then
+        for rName, rRank in pairs(ROSTER_POWER) do
+            if strId:find(rName) then
+                rank = rRank
+                break
+            end
+        end
+    end
+    
+    rank = rank or 1
+    
+    if isTitanic then
+        rank = rank + 100
+    elseif isHuge then
+        rank = rank + 50
+    end
+    
+    if isShiny then rank = rank + 5 end
+    if isRainbow then rank = rank + 3 end
+    if isGolden then rank = rank + 2 end
+    
+    return (rank * 10000) + (lvl * 10)
+end
+
+-- HELPER LẤY CHÍNH XÁC DANH SÁCH DEFENDER UNITS TỪ SAVE.GET().INVENTORY.TOWER (HỖ TRỢ STACK SỐ LƯỢNG _am x218)
+local function getInventoryTowers()
+    local inventoryTowers = {}
+    local saveData = Save.Get and Save.Get()
+    local inv = saveData and saveData.Inventory
+    
+    if inv and inv.Tower then
+        -- 1. Đếm số lượng từng UID đang đứng thi đấu trên sân
+        local activeCountsByUID = {}
+        local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+        local activeTowers = (tdLocal and ClientTower and ClientTower.All(tdLocal)) or {}
+        
+        for _, active in ipairs(activeTowers) do
+            if active and not active.Destroyed then
+                local item = active:GetItem()
+                local u = item and (item.GetUID and item:GetUID() or item._uid or item.uid)
+                if u then
+                    local uStr = tostring(u)
+                    activeCountsByUID[uStr] = (activeCountsByUID[uStr] or 0) + 1
+                end
+            end
+        end
+        
+        -- 2. Duyệt qua từng item trong Save.Get().Inventory.Tower và tính toán số lượng chưa đặt (_am - activeCount)
+        for uid, itemData in pairs(inv.Tower) do
+            if type(itemData) == "table" then
+                local unitId = itemData.id or itemData._id or "Unknown"
+                local unitLvl = itemData.sh or itemData.level or itemData.lvl or 1
+                local stackAmt = itemData._am or itemData.am or itemData.amount or itemData._cnt or 1
+                local pwr = getUnitPower(unitId, unitLvl, itemData)
+                local uStr = tostring(uid)
+                
+                local placedAmt = activeCountsByUID[uStr] or 0
+                local unplacedAmt = math.max(0, stackAmt - placedAmt)
+                
+                for i = 1, unplacedAmt do
+                    table.insert(inventoryTowers, {
+                        uid = uStr,
+                        id = unitId,
+                        lvl = unitLvl,
+                        data = itemData,
+                        power = pwr
+                    })
+                end
+            end
+        end
+    end
+    
+    return inventoryTowers
+end
+
+-- HELPER QUÉT TOÀN BỘ CÁC Ô TRỐNG TRÊN LANES VÀ TÍNH CHÍNH XÁC RELATIVE CFRAME
+local function getAvailableLaneSlots()
+    local freeSlots = {}
+    local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+    local plotModel = localPlot and localPlot:GetModel()
+    local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+    
+    if not plotModel or not tdLocal then return freeSlots, tdLocal end
+    
+    local lanesFolder = plotModel:FindFirstChild("Lanes")
+    if not lanesFolder then return freeSlots, tdLocal end
+    
+    local activeTowers = ClientTower.All(tdLocal) or {}
+    local unlockedLanes = localPlot:Save("PvC_UnlockedLanes") or 7
+    
+    for _, lane in ipairs(lanesFolder:GetChildren()) do
+        local laneNum = tonumber(lane.Name)
+        if laneNum and laneNum <= unlockedLanes then
+            local slotsFolder = lane:FindFirstChild("Slots")
+            if slotsFolder then
+                for _, slotPart in ipairs(slotsFolder:GetChildren()) do
+                    if slotPart:IsA("BasePart") then
+                        local isOccupied = false
+                        for _, tower in ipairs(activeTowers) do
+                            if tower and not tower.Destroyed then
+                                local towerCF = (tower.GetCFrame and tower:GetCFrame()) or (tower.Model and tower.Model.GetPivot and tower.Model:GetPivot())
+                                local pos = towerCF and towerCF.Position
+                                if pos and (Vector2.new(pos.X, pos.Z) - Vector2.new(slotPart.Position.X, slotPart.Position.Z)).Magnitude < 2.5 then
+                                    isOccupied = true
+                                    break
+                                end
+                            end
+                        end
+                        if not isOccupied then
+                            table.insert(freeSlots, slotPart)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return freeSlots, tdLocal
+end
+
+-- ==========================================================================
+-- 3. CÁC MODULE CHỨC NĂNG (THEO THỨ TỰ ƯU TIÊN NGÂN SÁCH + DETAILED LOGS)
+-- ==========================================================================
+
+local EventP2 = {}
+local lastDefenderUpgradeTime = 0
+local lastRegrowAttemptTime = 0
+
+-- --------------------------------------------------------------------------
+-- MODULE 0: UNIVERSAL FPS & RAM OPTIMIZER (TẮT MAP DECOR, XÓA HIGHLIGHT/DECAL, ÉP QUALITY LEVEL 1)
+-- --------------------------------------------------------------------------
+function EventP2.OptimizeFPSAndRAM()
+    if not Config.OptimizePerformance then return end
+    
+    -- 1. GIẢM DOWNSCALE LIGHTING VỀ CẤP THẤP NHẤT
+    pcall(function()
+        local Lighting = game:GetService("Lighting")
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 0
+        Lighting.Technology = Enum.Technology.Compatibility
+        
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") or v:IsA("Atmosphere") or v:IsA("Sky") or v:IsA("Clouds") or v:IsA("SunRaysEffect") or v:IsA("BloomEffect") or v:IsA("BlurEffect") then
+                v.Enabled = false -- Thay vì Destroy() để không làm lỗi Egg Opening Frontend (nil with 'Intensity')
+            end
+        end
+    end)
+    
+    -- 2. TỐI ƯU CỰC ĐẠI: XÓA MÀU WORLD, CHUYỂN TOÀN BỘ PART VỀ XÁM PHẲNG SMOOTHPLASTIC, XÓA MẪU TEXTURES/DECALS REAL-TIME
+    pcall(function()
+        local function stripColorsAndTextures(obj)
+            if obj:IsA("BasePart") then
+                obj.Material = Enum.Material.SmoothPlastic
+                obj.Color = Color3.fromRGB(163, 162, 165) -- Màu xám phẳng nhẹ giải phóng 100% tài nguyên VRAM/GPU
+                obj.Reflectance = 0
+                obj.CastShadow = false
+                if obj:IsA("MeshPart") then
+                    pcall(function() obj.TextureID = "" end)
+                end
+            elseif obj:IsA("SpecialMesh") then
+                pcall(function() obj.TextureId = "" end)
+            elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                pcall(function() obj:Destroy() end)
+            elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
+                obj.Enabled = false
+            elseif obj:IsA("Highlight") then
+                obj.Enabled = false
+            end
+        end
+
+        if not getgenv()._MapCleanedOnce then
+            getgenv()._MapCleanedOnce = true
+            
+            -- Quét toàn bộ World & Workspace hiện tại
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                pcall(stripColorsAndTextures, obj)
+            end
+            
+            -- Lắng nghe các Part / Pet / Crop mới sinh ra real-time để lập tức xóa màu & texture giải phóng RAM/CPU
+            workspace.DescendantAdded:Connect(function(obj)
+                if Config.OptimizePerformance then
+                    task.spawn(function()
+                        pcall(stripColorsAndTextures, obj)
+                    end)
+                end
+            end)
+        end
+    end)
+    
+    -- 3. XÓA MÔ HÌNH TRANG TRÍ KHÔNG CẦN THIẾT TRÊN MAP (TREES, GRASS, WATER, FOLIAGE, ROCKS, CLOUDS)
+    pcall(function()
+        local Map = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Map1") or workspace:FindFirstChild("__MAP")
+        if Map then
+            for _, child in ipairs(Map:GetChildren()) do
+                local name = child.Name:lower()
+                if name:find("tree") or name:find("grass") or name:find("foliage") or name:find("water") 
+                    or name:find("rock") or name:find("cloud") or name:find("decor") or name:find("effect") then
+                    pcall(function() child:Destroy() end)
+                end
+            end
+        end
+        
+        -- Tắt hiệu ứng sóng nước Terrain
+        if workspace.Terrain then
+            workspace.Terrain.WaterWaveSize = 0
+            workspace.Terrain.WaterWaveSpeed = 0
+            workspace.Terrain.WaterReflectance = 0
+        end
+    end)
+    
+    -- 4. ÉP RENDERING QUALITY LEVEL VỀ LEVEL 01 (MẬT ĐỘ THẤP NHẤT TRÊN TẤT CẢ EXECUTOR VÀ THIẾT BỊ YẾU)
+    pcall(function()
+        if settings and settings().Rendering then
+            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+        end
+    end)
+    
+    -- 5. TẮT HẲN 3D RENDERING MÀN HÌNH NẾU CONFIG DISABLE3DRENDERING = TRUE (GIẢM 95% CPU/GPU RAM)
+    pcall(function()
+        local RunService = game:GetService("RunService")
+        if Config.Disable3DRendering and RunService.Set3dRenderingEnabled then
+            RunService:Set3dRenderingEnabled(false)
+        end
+    end)
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 1: AUTO JOIN EVENT GARDEN
+-- --------------------------------------------------------------------------
+-- HELPER KIỂM TRA PLAYER ĐANG Ở TRONG EVENT GARDEN CHUẨN XÁC 100%
+local function isPlayerInGarden()
+    local inGarden = false
+    -- 1. Check InstancingCmds API
+    pcall(function()
+        if InstancingCmds and InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID() == INSTANCE_NAME then
+            inGarden = true
+        end
+    end)
+    if inGarden then return true end
+    
+    -- 2. Check ClientPlot local plot instance
+    pcall(function()
+        if ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal(INSTANCE_NAME) ~= nil then
+            inGarden = true
+        end
+    end)
+    if inGarden then return true end
+    
+    -- 3. Check LocalPlayer Attribute
+    if LocalPlayer:GetAttribute("InstanceId") == INSTANCE_NAME then
+        return true
+    end
+    
+    -- 4. Check Workspace Plots ownership
+    pcall(function()
+        local things = workspace:FindFirstChild("__THINGS")
+        local plots = things and things:FindFirstChild("Plots")
+        if plots then
+            for _, plot in ipairs(plots:GetChildren()) do
+                local owner = plot:GetAttribute("Owner") or plot:GetAttribute("OwnerUsername") or plot:GetAttribute("OwnerUserId")
+                if owner == LocalPlayer.Name or owner == LocalPlayer.UserId then
+                    inGarden = true
+                    break
+                end
+            end
+        end
+    end)
+    
+    return inGarden
+end
+
+function EventP2.JoinEvent()
+    if not Config.AutoJoin then return true end
+    
+    if isPlayerInGarden() then
+        LocalPlayer:SetAttribute("InstanceId", INSTANCE_NAME)
+        return true
+    end
+    
+    local currentInst = InstancingCmds.GetInstanceID and InstancingCmds.GetInstanceID() or LocalPlayer:GetAttribute("InstanceId")
+    debugLog("[JOIN] Switching to Event Instance:", INSTANCE_NAME, "(Current:", tostring(currentInst) .. ")")
+    
+    if currentInst and currentInst ~= "" and currentInst ~= INSTANCE_NAME then
+        pcall(function() Network.Fire("Instancing_PlayerLeaveInstance", currentInst) end)
+        task.wait(0.3)
+    end
+    
+    -- 1. Ưu tiên sử dụng API chính chủ của game: InstancingCmds.Enter("Garden")
+    if InstancingCmds and InstancingCmds.Enter then
+        pcall(function() InstancingCmds.Enter(INSTANCE_NAME) end)
+        task.wait(0.5)
+        if isPlayerInGarden() then
+            debugLog("[JOIN] Successfully joined Event Garden via InstancingCmds.Enter!")
+            return true
+        end
+    end
+    
+    -- 2. Fallback: Invoke Direct Remote
+    local success, instConfig = pcall(function()
+        return Network.Invoke("Instancing_PlayerEnterInstance", INSTANCE_NAME)
+    end)
+    
+    if success and instConfig then
+        LocalPlayer:SetAttribute("InstanceId", INSTANCE_NAME)
+        pcall(function() Network.Fire("Instances: Mark Entered", INSTANCE_NAME) end)
+        debugLog("[JOIN] Successfully joined Event Garden via Network Remote!")
+        return true
+    end
+    return isPlayerInGarden()
+end
+
+-- HELPER QUÉT TOÀN BỘ HẠT GIỐNG TỪ TÚI
+-- BẢNG PHÂN CẤP RANK CHÍNH XÁC (RANK 1..9)
+local SEED_RANK = {
+    ["Large Chest"] = 9, ["Celestial"] = 9,
+    ["Medium Chest"] = 8, ["Superior"] = 8,
+    ["Small Chest"] = 7, ["Chest Seed"] = 7, ["Chest"] = 7, ["Plasma Seed"] = 7, ["Plasma"] = 7,
+    ["Ultimate Seed"] = 6, ["Ultimate"] = 6,
+    ["Mythic Seed"] = 5, ["Mythic"] = 5,
+    ["Divine Seed"] = 4, ["Divine"] = 4, ["Glitch Seed"] = 4, ["Glitch"] = 4,
+    ["Exotic Seed"] = 3, ["Exotic"] = 3, ["Large Bag"] = 3,
+    ["Rare Seed"] = 2, ["Rare"] = 2, ["Medium Bag"] = 2, ["Gift"] = 2,
+    ["Basic Seed"] = 1, ["Basic"] = 1, ["Small Bag"] = 1, ["Sunflower"] = 1
+}
+
+local bedPlantedCooldown = {}
+local lastHarvestTime = 0
+local lastCropReportTime = 0
+
+-- HELPER TRÍCH XUẤT TÊN CHUẨN XÁC DÙ LÀ STRING, TABLE HAY NUMBER
+local function extractSeedName(sd)
+    if type(sd) == "string" then
+        return sd
+    elseif type(sd) == "table" then
+        return tostring(sd.id or sd._id or sd.Name or sd.seed or "")
+    elseif type(sd) == "number" then
+        return tostring(sd)
+    end
+    return ""
+end
+
+-- HELPER TÍNH RANK CHÍNH XÁC CỦA NÔNG SẢN ĐANG MỌC TRÊN ĐẤT (RANK 1..9)
+local function getPlantRank(data)
+    if type(data) ~= "table" then return 0 end
+    local raw = extractSeedName(data.Seed or data.seed or data.sd)
+    local crop = extractSeedName(data.sp or data.id)
+    local combined = (raw .. " " .. crop):lower()
+    
+    if combined:find("large chest") or combined:find("celestial") then return 9 end
+    if combined:find("medium chest") or combined:find("superior") then return 8 end
+    if combined:find("small chest") or combined:find("chest") or combined:find("plasma") then return 7 end
+    if combined:find("ultimate") then return 6 end
+    if combined:find("mythic") then return 5 end
+    if combined:find("divine") or combined:find("glitch") then return 4 end
+    if combined:find("exotic") or combined:find("large bag") then return 3 end
+    if combined:find("rare") or combined:find("medium bag") or combined:find("gift") then return 2 end
+    if combined:find("basic") or combined:find("small bag") or combined:find("sunflower") then return 1 end
+    
+    local r1 = SEED_RANK[raw] or 0
+    local r2 = SEED_RANK[crop] or 0
+    return math.max(r1, r2, 1)
+end
+
+-- HELPER QUÉT TOÀN BỘ HẠT GIỐNG TỪ TÚI (TỐI ƯU THEO PHƯƠNG PHÁP PLAZA_SELL_UI.LUA)
+local function getAvailableSeeds()
+    local seeds = {}
+    pcall(function()
+        local saveData = Save and Save.Get and Save.Get()
+        local inv = saveData and saveData.Inventory
+        local seedDict = inv and (inv.CropSeed or inv.Seed)
+        if seedDict then
+            for uid, itemData in pairs(seedDict) do
+                local sId = itemData.id or itemData._id or "Basic"
+                if Types then
+                    pcall(function()
+                        local itemObj = Types.From("CropSeed", itemData)
+                        if itemObj and itemObj.GetName then
+                            sId = itemObj:GetName()
+                        end
+                    end)
+                end
+                table.insert(seeds, {
+                    GetUID = function() return tostring(uid) end,
+                    GetId = function() return tostring(sId) end,
+                    uid = tostring(uid),
+                    id = tostring(sId)
+                })
+            end
+        end
+    end)
+    
+    if #seeds == 0 then
+        pcall(function()
+            if Items and Items.CropSeed then
+                local res = Items.CropSeed:All()
+                if res and #res > 0 then
+                    seeds = res
+                end
+            end
+        end)
+    end
+    return seeds
+end
+
+-- HELPER GIEO HẠT AN TOÀN VỚI 3 LỚP FALLBACK
+local function insertSeedIntoBed(localPlot, bedStr, plantSeed)
+    if not plantSeed then return false end
+    
+    local argsToTry = {}
+    
+    -- 1. Thử UID string (Nếu có)
+    pcall(function()
+        if plantSeed.GetUID then
+            local u = plantSeed:GetUID()
+            if u and u ~= "" then table.insert(argsToTry, u) end
+        end
+    end)
+    pcall(function()
+        if plantSeed.uid and plantSeed.uid ~= "" then
+            table.insert(argsToTry, plantSeed.uid)
+        end
+    end)
+    
+    -- 2. Thử Seed Item Object trực tiếp (Chuẩn Items.CropSeed:All() của PS99)
+    table.insert(argsToTry, plantSeed)
+    
+    -- 3. Thử Seed ID / Tên Hạt Giống (Fallback cuối)
+    pcall(function()
+        local sId = plantSeed.GetId and plantSeed:GetId() or plantSeed.id or plantSeed._id
+        if sId and sId ~= "" then table.insert(argsToTry, sId) end
+    end)
+    
+    for _, arg in ipairs(argsToTry) do
+        local ok, res = pcall(function()
+            return localPlot:Invoke("SD_Insert", bedStr, arg)
+        end)
+        if ok and res ~= false and res ~= nil then
+            return true
+        end
+    end
+    
+    return false
+end
+
+function EventP2.LogCropStatus(beds, bestSeedName, bestSeedRank, plasmaSeedCount)
+    local now = os.clock()
+    if now - lastCropReportTime < 30 then return end
+    lastCropReportTime = now
+    
+    local cropCounts = {}
+    local totalBeds = 0
+    
+    for bedId, bedData in pairs(beds) do
+        if type(bedData) == "table" then
+            totalBeds = totalBeds + 1
+            local cropType = extractSeedName(bedData.sp or bedData.id or bedData.Seed or "Basic")
+            if bedData.sh or bedData.shiny then cropType = "Shiny " .. cropType end
+            cropCounts[cropType] = (cropCounts[cropType] or 0) + 1
+        end
+    end
+    
+    local cropSummaries = {}
+    for cropName, count in pairs(cropCounts) do
+        table.insert(cropSummaries, string.format("%d %s", count, cropName))
+    end
+    
+    debugLog(string.format("[GARDEN STATUS] %d/10 Beds | Plasma Seeds: %d | Best Seed: %s (Rank %d) | Crops: %s",
+        totalBeds, plasmaSeedCount or 0, tostring(bestSeedName), tonumber(bestSeedRank) or 1, table.concat(cropSummaries, ", ")))
+end
+
+function EventP2.FarmCrops()
+    if not Config.AutoHarvestCrops and not Config.AutoPlantSeeds then return end
+    
+    local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+    if not localPlot then return end
+    
+    pcall(function() Network.Invoke("YB_Latch", "Harvest") end)
+    
+    -- 1. UNLOCK BEDS (2..10)
+    if Config.AutoUnlockPlotBeds then
+        for bedId = 2, 10 do
+            local bedStr = tostring(bedId)
+            local isUnlocked = false
+            pcall(function()
+                if GardenPlots and GardenPlots.IsBedUnlocked then
+                    isUnlocked = GardenPlots.IsBedUnlocked(localPlot, bedStr) or GardenPlots.IsBedUnlocked(localPlot, bedId)
+                end
+            end)
+            
+            if not isUnlocked then
+                pcall(function()
+                    local aOk, aRes = pcall(function() return localPlot:Invoke("BD_Acquire", bedStr) end)
+                    if aOk and aRes then
+                        debugLog(string.format("[PLOT BED] Unlocked Bed #%s", bedStr))
+                    end
+                    task.wait(0.15)
+                end)
+            end
+        end
+    end
+    
+    local beds = localPlot:Save("PvC_Beds") or {}
+    local now = os.clock()
+    
+    -- 2. HARVEST (SD_Collect 5s Interval)
+    if Config.AutoHarvestCrops and (now - lastHarvestTime >= 5) then
+        lastHarvestTime = now
+        for bedId, data in pairs(beds) do
+            local collectSuccess, reward = pcall(function()
+                return localPlot:Invoke("SD_Collect", tostring(bedId))
+            end)
+            if collectSuccess and type(reward) == "number" and reward > 0 then
+                debugLog(string.format("[HARVEST] Bed #%s | +%s Sunflowers", tostring(bedId), formatNumber(reward)))
+            end
+        end
+    end
+    
+    beds = localPlot:Save("PvC_Beds") or {}
+    
+    -- 3. SCAN SEEDS
+    local allSeeds = getAvailableSeeds()
+    table.sort(allSeeds, function(a, b)
+        local idA = a.GetId and a:GetId() or a.id or ""
+        local idB = b.GetId and b:GetId() or b.id or ""
+        return (SEED_RANK[idA] or 0) > (SEED_RANK[idB] or 0)
+    end)
+    
+    local plasmaSeeds = {}
+    for _, s in ipairs(allSeeds) do
+        local sName = s.GetId and s:GetId() or s.id or ""
+        local sRank = SEED_RANK[sName] or 1
+        if sRank >= 7 then table.insert(plasmaSeeds, s) end
+    end
+    
+    local bestSeed = #allSeeds > 0 and allSeeds[1] or nil
+    local bestSeedName = bestSeed and (bestSeed.GetId and bestSeed:GetId() or bestSeed.id) or "Basic"
+    local bestSeedRank = SEED_RANK[bestSeedName] or 1
+    
+    pcall(function()
+        EventP2.LogCropStatus(beds, bestSeedName, bestSeedRank, #plasmaSeeds)
+    end)
+    
+    -- 4. PLASMA SEEDS PLANTING (Target Rank < 7 beds, Slot Order 10..1)
+    if #plasmaSeeds > 0 then
+        local slotOrder = {10, 9, 8, 7, 6, 5, 4, 3, 2, 1}
+        local plasmaIndex = 1
+        
+        for _, i in ipairs(slotOrder) do
+            if plasmaIndex > #plasmaSeeds then break end
+            
+            local bedStr = tostring(i)
+            local bedData = beds[bedStr]
+            local currentRank = getPlantRank(bedData)
+            
+            if currentRank < 7 then
+                local currentPlasmaSeed = plasmaSeeds[plasmaIndex]
+                local pName = currentPlasmaSeed.GetId and currentPlasmaSeed:GetId() or currentPlasmaSeed.id or "Plasma Seed"
+                
+                debugLog(string.format("[PLASMA SEED] Replacing Bed #%s (%s [Rank %d]) -> Planting Plasma Seed...", bedStr, extractSeedName(bedData and (bedData.sp or bedData.id) or "Empty"), currentRank))
+                pcall(function() localPlot:Invoke("SD_Purge", bedStr) end)
+                beds[bedStr] = nil
+                task.wait(0.15)
+                
+                local pOk = insertSeedIntoBed(localPlot, bedStr, currentPlasmaSeed)
+                if pOk then
+                    bedPlantedCooldown[bedStr] = os.clock()
+                    beds[bedStr] = { Seed = pName, sp = pName }
+                    debugLog(string.format("[PLASMA SUCCESS] Planted Plasma Seed into Bed #%s", bedStr))
+                    plasmaIndex = plasmaIndex + 1
+                end
+            end
+        end
+    end
+    
+    -- 5. AUTO PLANT & PURGE JUNK (Rank 1 & 2)
+    if Config.AutoPlantSeeds then
+        local slotOrder = {10, 9, 8, 7, 6, 5, 4, 3, 2, 1}
+        for _, i in ipairs(slotOrder) do
+            local bedStr = tostring(i)
+            local bedData = beds[bedStr]
+            local currentRank = getPlantRank(bedData)
+            
+            local freshSeeds = getAvailableSeeds()
+            if #freshSeeds > 0 then
+                table.sort(freshSeeds, function(a, b)
+                    local idA = a.GetId and a:GetId() or a.id or ""
+                    local idB = b.GetId and b:GetId() or b.id or ""
+                    return (SEED_RANK[idA] or 0) > (SEED_RANK[idB] or 0)
+                end)
+                
+                local plantSeed = freshSeeds[1]
+                local plantName = plantSeed.GetId and plantSeed:GetId() or plantSeed.id or "Basic"
+                local plantRank = SEED_RANK[plantName] or 1
+                
+                local shouldPurgeJunk = (bedData ~= nil and type(bedData) == "table" and currentRank < 3 and plantRank >= 3)
+                
+                if shouldPurgeJunk then
+                    debugLog(string.format("[PURGE JUNK] Bed #%s (%s [Rank %d]) purged -> Replacing with %s [Rank %d]...", bedStr, extractSeedName(bedData.sp or bedData.id), currentRank, plantName, plantRank))
+                    pcall(function() localPlot:Invoke("SD_Purge", bedStr) end)
+                    beds[bedStr] = nil
+                    task.wait(0.15)
+                end
+                
+                if beds[bedStr] == nil or type(beds[bedStr]) ~= "table" then
+                    local plantSuccess = insertSeedIntoBed(localPlot, bedStr, plantSeed)
+                    if plantSuccess then
+                        bedPlantedCooldown[bedStr] = os.clock()
+                        beds[bedStr] = { Seed = plantName, sp = plantName }
+                        debugLog(string.format("[AUTO PLANT] Planted %s [Rank %d] into Bed #%s", tostring(plantName), plantRank, bedStr))
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 3: AUTO UNLOCK LANES (PG_Widen & JC_Manifest)
+-- --------------------------------------------------------------------------
+function EventP2.UnlockLanes()
+    if not Config.AutoUnlockLanes then return end
+    
+    local success, manifest = pcall(function()
+        return Network.Invoke("JC_Manifest")
+    end)
+    
+    local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+    if not localPlot then return end
+    
+    local currentUnlocked = localPlot:Save("PvC_UnlockedLanes") or 1
+    if currentUnlocked >= 7 then return end
+    
+    local cost = (type(manifest) == "table" and manifest[currentUnlocked + 1]) or (manifest and manifest[tostring(currentUnlocked + 1)])
+    local mySunflowers = getSunflowers()
+    if cost and mySunflowers < cost then
+        return
+    end
+    
+    debugLog("[LANE] Unlocking next lane:", currentUnlocked + 1)
+    local unlockSuccess, res1, res2 = pcall(function()
+        return Network.Invoke("PG_Widen")
+    end)
+    if unlockSuccess and res1 then
+        debugLog("[LANE] Successfully unlocked lane!", res1, res2)
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 4: AUTO EVENT UPGRADES / PERKS (Upgrades_Purchase + FULL LOGS)
+-- --------------------------------------------------------------------------
+local PERK_PRIORITY = {
+    "GardenBetterEggs",      -- ƯU TIÊN 1: Nâng cấp Garden Egg 1→12 (event egg xịn nhất) sớm nhất
+    "GardenMoreDamage",
+    "GardenFasterAttacks",
+    "GardenMoreCoins",
+    "GardenFasterCrops",
+    "GardenBiggerHarvest",
+    "GardenMoreSeeds",
+    "GardenBetterLuck"
+}
+
+
+function EventP2.BuyEventUpgrades()
+    if not Config.AutoBuyUpgrades then return end
+    
+    for _, perkName in ipairs(PERK_PRIORITY) do
+        local success, res1, res2 = pcall(function()
+            if EventUpgradeCmds and EventUpgradeCmds.Purchase then
+                return EventUpgradeCmds.Purchase(perkName)
+            else
+                return Network.Invoke("EventUpgrades: Purchase", perkName)
+            end
+        end)
+        
+        if success then
+            if res1 == true or (res1 ~= nil and res1 ~= false) then
+                debugLog(string.format("[EVENT UPGRADE] Upgraded Perk [%s]", perkName))
+            end
+        else
+            pcall(function()
+                local ok, res = Network.Invoke("EventUpgrades: Purchase", perkName)
+                if ok and res then
+                    debugLog(string.format("[EVENT UPGRADE] Purchased Perk [%s]", perkName))
+                end
+            end)
+        end
+        task.wait(0.05)
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 5: AUTO BUY FARMING MERCHANT
+-- --------------------------------------------------------------------------
+function EventP2.BuyMerchant()
+    if not Config.AutoBuyMerchant then return end
+    
+    local totalBought = 0
+    for slot = 1, 6 do
+        local attempts = 0
+        local maxAttemptsPerSlot = 50
+        
+        while attempts < maxAttemptsPerSlot do
+            attempts = attempts + 1
+            local success, result = pcall(function()
+                return Network.Invoke("Merchant_RequestPurchase", "FarmingMerchant", slot)
+            end)
+            
+            if success and result == true then
+                totalBought = totalBought + 1
+                debugLog(string.format("[MERCHANT] Bought item at Slot #%d (Total: %d)", slot, totalBought))
+                task.wait(0.05)
+            else
+                break
+            end
+        end
+    end
+    
+    if totalBought > 0 then
+        debugLog(string.format("[MERCHANT] Purchased all %d items from FarmingMerchant (Slots 1..6)", totalBought))
+        pcall(function() EventP2.TrackInventoryWebhooks() end)
+    end
+end
+
+local lastHatchAttemptTime = 0
+function EventP2.IsEconomyMaxed()
+    local isMaxed = true
+    pcall(function()
+        local SaveModule = require(Client:WaitForChild("Save"))
+        local save = SaveModule and SaveModule.Get()
+        local saveUpgrades = save and save.EventUpgrades or {}
+        
+        local maxLevels = {
+            ["GardenBetterEggs"] = 11,
+            ["GardenMoreCoins"] = 20,
+            ["GardenMoreDamage"] = 20,
+            ["GardenFasterAttacks"] = 20,
+            ["GardenFasterCrops"] = 20,
+            ["GardenBiggerHarvest"] = 20,
+            ["GardenMoreSeeds"] = 20,
+            ["GardenBetterLuck"] = 20
+        }
+        
+        for upId, targetMaxLvl in pairs(maxLevels) do
+            local currentLevel = tonumber(saveUpgrades[upId]) or 0
+            if currentLevel < targetMaxLvl then
+                isMaxed = false
+                return
+            end
+        end
+        
+        local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+        if tdLocal and ClientTower then
+            local activeTowers = ClientTower.All(tdLocal) or {}
+            for _, tower in ipairs(activeTowers) do
+                if tower and not tower.Destroyed then
+                    local currentLvl = (tower.GetUpgrade and tower:GetUpgrade()) or (tower.State and tower.State.Upgrade and tower.State.Upgrade.Get and tower.State.Upgrade:Get()) or 1
+                    local item = tower.GetItem and tower:GetItem()
+                    local maxLvl = item and item.GetMaxUpgrade and item:GetMaxUpgrade() or 10
+                    if currentLvl < maxLvl then
+                        isMaxed = false
+                        return
+                    end
+                end
+            end
+        end
+    end)
+    return isMaxed
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 6: AUTO HATCH EVENT EGGS
+-- --------------------------------------------------------------------------
+function EventP2.HatchEggs()
+    if not Config.AutoHatchEggs then return end
+    
+    local now = os.clock()
+    local isMaxed = EventP2.IsEconomyMaxed()
+    local normalDelay = Config.HatchInterval or 180
+    local fastDelay = Config.FastHatchInterval or 5
+    local requiredCooldown = isMaxed and fastDelay or normalDelay
+    
+    if now - lastHatchAttemptTime < requiredCooldown then
+        return
+    end
+    
+    -- Cập nhật mốc thời gian ngay lập tức để áp dụng Cooldown (180s) đúng chuẩn cho các vòng lặp 1.5s tiếp theo
+    lastHatchAttemptTime = now
+    
+    pcall(function()
+        local TabController = require(Client:WaitForChild("TabController"))
+        if TabController and TabController.Get and TabController.Get() ~= nil then
+            TabController.CloseTab(true)
+        end
+    end)
+    
+    -- Quét trực tiếp danh sách Custom Eggs từ Module của game thay vì dò trên Workspace
+    local candidates = {}
+    local pcallOk, CustomEggsCmds = pcall(require, game.ReplicatedStorage.Library.Client.CustomEggsCmds)
+    
+    if pcallOk and CustomEggsCmds and CustomEggsCmds.All then
+        local allEggs = CustomEggsCmds.All()
+        if type(allEggs) == "table" then
+            for uid, eggObj in pairs(allEggs) do
+                table.insert(candidates, { uid = uid, eggObj = eggObj })
+            end
+        end
+    end
+    
+    if #candidates == 0 then
+        debugLog("[HATCH SEARCH] No active egg candidates found in CustomEggsCmds")
+        return
+    end
+    
+    local myEggTarget = nil
+    for _, item in ipairs(candidates) do
+        local eggObj = item.eggObj
+        local isHatchable = false
+        pcall(function() isHatchable = eggObj:IsHatchable() end)
+        
+        -- Ưu tiên 1: ĐÚNG Owner VÀ đang IsHatchable() = true
+        if eggObj and eggObj._owner == game.Players.LocalPlayer and isHatchable then
+            myEggTarget = item
+            break
+        end
+    end
+    
+    -- Ưu tiên 2: Lấy trứng IsHatchable() gần Plot / Player HRP nhất (như find_egg.lua)
+    if not myEggTarget then
+        local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+        local plotModel = localPlot and localPlot:GetModel()
+        local plotPos = plotModel and plotModel:GetPivot().Position
+        if not plotPos and game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            plotPos = game.Players.LocalPlayer.Character.HumanoidRootPart.Position
+        end
+        
+        if plotPos then
+            local minDistance = math.huge
+            for _, item in ipairs(candidates) do
+                local eggObj = item.eggObj
+                local isHatchable = false
+                pcall(function() isHatchable = eggObj:IsHatchable() end)
+                
+                if isHatchable then
+                    local eggPos = eggObj and eggObj._position
+                    if not eggPos and eggObj and eggObj.GetModel then
+                        local mod = eggObj:GetModel()
+                        if mod then eggPos = mod:GetPivot().Position end
+                    end
+                    
+                    if eggPos then
+                        local dist = (eggPos - plotPos).Magnitude
+                        if dist < minDistance then
+                            minDistance = dist
+                            myEggTarget = item
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    if not myEggTarget then
+        debugLog("[HATCH SEARCH] Found candidates but none are currently hatchable/unlocked")
+        return
+    end
+    
+    -- Reset biến OpeningEgg của game để không bị khóa trạng thái Interact
+    pcall(function()
+        local Variables = require(Library.Client.Parent.Variables or Library:WaitForChild("Variables"))
+        if Variables then
+            Variables.OpeningEgg = 0
+            Variables.Typing = false
+            Variables.MessageOpen = false
+        end
+    end)
+    
+    local targetUID = myEggTarget.uid
+    local hatchAmount = 1
+    local skipEgg = nil
+    
+    pcall(function()
+        local CustomEggsCmds      = require(game.ReplicatedStorage.Library.Client.CustomEggsCmds)
+        local EggCmds             = require(game.ReplicatedStorage.Library.Client.EggCmds)
+        local okCalc, CalcEggPricePlayer = pcall(require, game.ReplicatedStorage.Library.Balancing.CalcEggPricePlayer)
+        local CurrencyCmds        = require(game.ReplicatedStorage.Library.Client.CurrencyCmds)
+        local eggObj = CustomEggsCmds and CustomEggsCmds.Get(targetUID)
+        if not eggObj then
+            error("eggObj is nil for UID: " .. tostring(targetUID))
+        end
+        
+        local _dir = eggObj._dir
+        local currency = _dir and _dir.currency or "Sunflowers"
+        
+        -- 1. LẤY GIÁ 1 QUẢ TRỨNG
+        local price = 0
+        if okCalc and CalcEggPricePlayer and _dir then
+            local ok, pVal = pcall(CalcEggPricePlayer, _dir, nil, not eggObj._allowChargedAndGolden)
+            if ok and type(pVal) == "number" and pVal > 0 then
+                price = pVal
+            end
+        end
+        if price <= 0 and _dir then
+            price = _dir.cost or _dir.overrideCost or _dir.price or 0
+        end
+        if price <= 0 then
+            price = 15000000 -- Default 15M Sunflowers
+        end
+        
+        -- 2. LẤY SỐ SLOT HATCH TỐI ĐA CỦA PLAYER
+        local maxHatchSlots = eggObj._maxEggCount
+        if not maxHatchSlots and _dir and EggCmds and EggCmds.GetMaxHatch then
+            pcall(function() maxHatchSlots = EggCmds.GetMaxHatch(_dir) end)
+        end
+        maxHatchSlots = maxHatchSlots or 84
+        
+        -- 3. TÍNH SỐ LƯỢNG MUA ĐƯỢC THEO TÚI TIỀN (AFFORDABLE)
+        local balance = CurrencyCmds and CurrencyCmds.Get and (CurrencyCmds.Get(currency) or 0) or 0
+        local affordable = math.floor(balance / price)
+        
+        -- A. KIỂM TRA LỖI KHÔNG ĐỦ TIỀN MUA NỔI 1 QUẢ
+        if affordable <= 0 then
+            debugLog(string.format("[HATCH SKIP - INSUFFICIENT FUNDS] Required %s Sunflowers (Price: %s/egg), Balance: %s", formatCompactNumber(price), formatCompactNumber(price), formatCompactNumber(balance)))
+            skipEgg = "nomoney"
+            return
+        end
+        
+        -- B. KIỂM TRA LỖI DƯỚI NGƯỠNG MINHATCHAMOUNT
+        local minHatchLimit = Config.MinHatchAmount or 1
+        if affordable < minHatchLimit then
+            debugLog(string.format("[HATCH SKIP - BELOW MINIMUM] Balance allows %d eggs (Balance: %s, Price: %s/egg) < MinHatchAmount (%d). Accumulating funds...", affordable, formatCompactNumber(balance), formatCompactNumber(price), minHatchLimit))
+            skipEgg = "notenoughmin"
+            return
+        end
+        
+        -- C. CHỌN HATCH AMOUNT CHUẨN XÁC
+        hatchAmount = math.floor(math.min(maxHatchSlots, affordable))
+    end)
+    hatchAmount = math.max(1, hatchAmount or 1)
+    
+    if skipEgg then
+        if skipEgg == "locked" then
+            debugLog(string.format("[HATCH SKIP] UID: %s - Egg locked (Not hatchable / Cooldown)", targetUID))
+        end
+    else
+        debugLog(string.format("[HATCH] UID: %s -> hatchAmount = %d", targetUID, hatchAmount))
+        
+        -- Tắt Egg Opening Animation TRƯỚC khi hatch
+        EventP2.ManageEggAntiLag()
+        
+        -- Tự động Teleport lại gần trứng nếu đang ở xa (> 15 studs)
+        pcall(function()
+            local eggPos = nil
+            local things = workspace:FindFirstChild("__THINGS") or workspace
+            local customEggsFolder = things:FindFirstChild("CustomEggs")
+            local modelInWs = customEggsFolder and customEggsFolder:FindFirstChild(targetUID)
+            if modelInWs then
+                pcall(function() eggPos = modelInWs:GetPivot().Position end)
+            end
+            if not eggPos then
+                eggPos = myEggTarget.eggObj and myEggTarget.eggObj._position
+                if not eggPos and myEggTarget.eggObj and myEggTarget.eggObj.GetModel then
+                    local mod = myEggTarget.eggObj:GetModel()
+                    if mod then eggPos = mod:GetPivot().Position end
+                end
+            end
+            
+            local player = game.Players.LocalPlayer
+            if eggPos and player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local hrp = player.Character.HumanoidRootPart
+                if (hrp.Position - eggPos).Magnitude > 15 then
+                    hrp.CFrame = CFrame.new(eggPos + Vector3.new(0, 2, 3))
+                    task.wait(0.8) -- Đợi Server đồng bộ gói tin Physics Replication vị trí mới của Client!
+                end
+            end
+        end)
+        
+        -- Gọi thẳng CustomEggs_Hatch(uid, amount)
+        local success, result
+        local retries = 0
+        repeat
+            success, result = pcall(function()
+                return Network.Invoke("CustomEggs_Hatch", targetUID, hatchAmount)
+            end)
+            if success and result == true then
+                break -- thành công
+            end
+            -- Nếu Server trả về false, break ngay tránh tốn thời gian retry
+            if success and result == false then
+                break
+            end
+            retries = retries + 1
+            if retries < 3 then
+                task.wait(1.0)
+            end
+        until (success and result == true) or retries >= 3
+        
+        if success and result == true then
+            debugLog(string.format("🐣 [HATCH SUCCESS] Hatched %d Event Eggs! (UID: %s)", hatchAmount, targetUID))
+        else
+            debugLog(string.format("⚠️ [HATCH FAIL - GAME ĐANG KHÓA / COOLDOWN] Server từ chối ấp %d quả (Result: %s, UID: %s)! Kiểm tra lại tiến trình diệt Boss ở Stage Rebirth này.", hatchAmount, tostring(result), targetUID))
+        end
+        
+        lastHatchAttemptTime = os.clock()
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 6.5: EGG MODEL ANTI-LAG (TẮT 100% EGG OPEN ANIMATION UI & CAMERA MODIFICATIONS)
+-- --------------------------------------------------------------------------
+function EventP2.ManageEggAntiLag()
+    pcall(function()
+        workspace:SetAttribute("GlobalInstantHatch", true)
+        local ok, Variables = pcall(require, game.ReplicatedStorage.Library.Client.Variables)
+        if not ok then
+            pcall(function() Variables = require(game.ReplicatedStorage.Library.Variables) end)
+        end
+        if Variables then
+            Variables.OpeningEgg = 0
+            Variables.MessageOpen = false
+        end
+    end)
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 7: AUTO EVENT LUCK BOOST (GardenChanceMachine_AddTime - HUGE/TITANIC/GARGANTUAN)
+-- --------------------------------------------------------------------------
+function EventP2.ManageEventBoosts()
+    if not Config.AutoEventBoost then return end
+    
+    local suns = getSunflowers()
+    if suns <= 0 then return end
+    
+    local boostMaxTokens = { Huge = 1667, Titanic = 5000, Gargantuan = 10000 }
+    local boostTypes = { "Huge", "Titanic", "Gargantuan" }
+    local maxBoostSeconds = 21600 -- Mốc MAX thời gian 6 tiếng (21,600 giây)
+    
+    local saveData = Save.Get and Save.Get()
+    local tracks = saveData and saveData.GardenChanceMachineTracks or {}
+    local nowServer = workspace:GetServerTimeNow()
+    
+    for _, boostName in ipairs(boostTypes) do
+        pcall(function()
+            local totalTokensForMax = boostMaxTokens[boostName] or 5000
+            local perTokenSec = maxBoostSeconds / totalTokensForMax
+            
+            local expireTime = tracks[boostName] or 0
+            local currentBoostSeconds = (expireTime > nowServer) and (expireTime - nowServer) or 0
+            
+            local secondsNeeded = maxBoostSeconds - currentBoostSeconds
+            
+            if secondsNeeded > 10 then
+                local tokensNeeded = math.ceil(secondsNeeded / perTokenSec)
+                local amountToSpend = math.min(tokensNeeded, suns)
+                
+                if amountToSpend > 0 then
+                    local bSuccess, bResult = Network.Invoke("GardenChanceMachine_AddTime", boostName, "Slot1", amountToSpend)
+                    if bSuccess and bResult then
+                        debugLog(string.format("[EVENT BOOST] Maxed [%s Luck] (+%s Sunflowers) -> Boost set to 6 Hours!", boostName, formatNumber(amountToSpend)))
+                    else
+                        local halfAmt = math.floor(amountToSpend / 2)
+                        if halfAmt > 0 then
+                            pcall(function()
+                                Network.Invoke("GardenChanceMachine_AddTime", boostName, "Slot1", halfAmt)
+                            end)
+                        end
+                    end
+                end
+            end
+        end)
+        task.wait(0.05)
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 8: AUTO CONSUME EVENT POTIONS & XP TOKENS
+-- --------------------------------------------------------------------------
+function EventP2.UseXPPotions()
+    if not Config.AutoConsumeXPPotions then return end
+    
+    local allowedMap = Config.AllowedPotions or {}
+    
+    pcall(function()
+        local saveData = Save.Get and Save.Get()
+        local inv = saveData and saveData.Inventory
+        if not inv then return end
+        
+        local dictsToScan = { inv.Consumable, inv.Potion, inv.XPPotion }
+        
+        for _, categoryDict in ipairs(dictsToScan) do
+            if type(categoryDict) == "table" then
+                for uid, itemData in pairs(categoryDict) do
+                    if type(itemData) == "table" then
+                        local pId = tostring(itemData.id or itemData._id or "")
+                        local tier = itemData.tn or itemData.tier or 1
+                        
+                        local isGardenPotion = false
+                        if pId:find("Garden") or pId:find("Growth Cocktail") or pId:find("Cocktail") or pId:find("Fertilizer") then
+                            isGardenPotion = true
+                        elseif pId:find("Sunlight") or pId:find("Rain") or pId:find("Coin Bloom") then
+                            isGardenPotion = true
+                        end
+                        
+                        if pId:find("Mining") or pId:find("Fishing") or pId:find("Backrooms") 
+                            or pId:find("Halloween") or pId:find("Dice") or pId:find("Pencil") 
+                            or pId:find("Scroll") or pId:find("Booster") or pId:find("Tile") then
+                            isGardenPotion = false
+                        end
+                        
+                        if isGardenPotion then
+                            local isBlacklisted = false
+                            
+                            -- Xác định đúng tên gốc để nối với Tier (Romain numeral)
+                            local baseConfigKey = pId
+                            if pId == "Sunlight" then baseConfigKey = "Garden Sunlight Potion"
+                            elseif pId == "Rain" then baseConfigKey = "Garden Rain Potion"
+                            elseif pId == "Speed" then baseConfigKey = "Garden Speed Potion"
+                            elseif pId == "Luck" then baseConfigKey = "Garden Luck Potion"
+                            elseif pId == "Coin Bloom" then baseConfigKey = "Garden Coin Bloom Potion"
+                            elseif pId == "Fertilizer" then baseConfigKey = "Fertilizer" -- Mặc định là Fertilizer thường
+                            end
+                            
+                            if pId:find("Cocktail") then
+                                baseConfigKey = "Growth Cocktail"
+                            end
+                            
+                            local finalKey = baseConfigKey
+                            
+                            -- Nối thêm Tier (I, II, III, IV...)
+                            if tier == 1 and baseConfigKey == "Growth Cocktail" then
+                                finalKey = baseConfigKey .. " I"
+                            elseif tier == 2 or pId:find("II") then
+                                finalKey = baseConfigKey .. " II"
+                            elseif tier == 3 or pId:find("III") then
+                                finalKey = baseConfigKey .. " III"
+                            elseif tier == 4 or pId:find("IV") then
+                                finalKey = baseConfigKey .. " IV"
+                            end
+                            
+                            -- Nếu key có trong config và bị false -> Blacklist
+                            if allowedMap[finalKey] == false then
+                                isBlacklisted = true
+                            elseif allowedMap[pId] == false then
+                                -- Check phụ cho chắc ăn
+                                isBlacklisted = true
+                            end
+                            
+                            if not isBlacklisted then
+                                local cOk, cRes = pcall(function()
+                                    return Network.Invoke("Consumables_Consume", tostring(uid), 1)
+                                end)
+                                if cOk and cRes ~= false then
+                                    debugLog("[POTION BUFF] Consumed Event Potion:", pId)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    
+    local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+    if tdLocal and ClientTower then
+        local activeTowers = ClientTower.All(tdLocal)
+        if activeTowers and #activeTowers > 0 then
+            local targetTower = nil
+            for _, tower in ipairs(activeTowers) do
+                if tower and not tower.Destroyed then
+                    targetTower = tower
+                    break
+                end
+            end
+            
+            if targetTower then
+                local towerUID = targetTower.Id or targetTower:GetId()
+                local eventPotionIds = { 
+                    "Tower Defense I", "Tower Defense II", "Tower Defense III",
+                    "Tower Defense XP Potion I", "Tower Defense XP Potion II", "Tower Defense XP Potion III",
+                    "Garden XP Token", "Pet XP Token"
+                }
+                
+                for _, potionId in ipairs(eventPotionIds) do
+                    if allowedMap[potionId] ~= false then
+                        local tokenUID = nil
+                        pcall(function()
+                            local saveData = Save.Get and Save.Get()
+                            local inv = saveData and saveData.Inventory
+                            if inv then
+                                local dicts = { inv.XPPotion, inv.Consumable, inv.Potion }
+                                for _, d in ipairs(dicts) do
+                                    if type(d) == "table" then
+                                        for u, it in pairs(d) do
+                                            if type(it) == "table" then
+                                                local pName = tostring(it.id or it._id or "")
+                                                if pName == potionId or pName:find(potionId) then
+                                                    tokenUID = tostring(u)
+                                                    break
+                                                end
+                                            end
+                                        end
+                                    end
+                                    if tokenUID then break end
+                                end
+                            end
+                        end)
+                        
+                        if tokenUID then
+                            local pOk, pRes = pcall(function()
+                                return Network.Invoke("XPPotions: Consume", potionId, tokenUID, towerUID, 1)
+                            end)
+                            if pOk and pRes and pRes ~= false then
+                                debugLog("[XP TOKEN] Consumed XP Token for Unit:", potionId)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 9: AUTO COMBINE MACHINE
+-- --------------------------------------------------------------------------
+function EventP2.ManageCombineMachine()
+    if not Config.AutoCombine then return end
+    
+    local success, board = pcall(function()
+        return Network.Invoke("GardenCombineMachine_GetBoard")
+    end)
+    
+    if success and type(board) == "table" then
+        if type(board.Queue) == "table" then
+            for qIdx, item in pairs(board.Queue) do
+                if type(item) == "table" then
+                    local isReady = item.Ready or item.Finished or item.Claimable
+                    local qUID = item.QueueUID or item.UID or qIdx
+                    if isReady or item.Progress == 1 then
+                        local cOk, cRes = pcall(function()
+                            return Network.Invoke("GardenCombineMachine_Claim", qUID)
+                        end)
+                        if cOk and cRes == true then
+                            debugLog(string.format("[COMBINE MACHINE] Claimed Pet from Combine Machine (UID: %s)", tostring(qUID)))
+                        end
+                    end
+                end
+            end
+        end
+        
+        local craftRungs = { "Titanic", "Huge3", "Huge2", "Huge1" }
+        local allowedRecipes = Config.CombineRecipes or {}
+        
+        for _, rungId in ipairs(craftRungs) do
+            if allowedRecipes[rungId] ~= false then
+                pcall(function()
+                    local craftOk, craftRes = Network.Invoke("GardenCombineMachine_StartCraft", rungId)
+                    if craftOk and craftRes == true then
+                        debugLog(string.format("[COMBINE MACHINE] Started Crafting Rung [%s]", rungId))
+                    end
+                end)
+            end
+        end
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 9.1: AUTO OPEN GIFTS & LOOTBOXES
+-- --------------------------------------------------------------------------
+function EventP2.AutoOpenGifts()
+    if not Config.AutoOpenGifts then return end
+    
+    pcall(function()
+        local saveData = Save and Save.Get and Save.Get()
+        local inv = saveData and saveData.Inventory
+        if inv and inv.Lootbox then
+            for uid, itemData in pairs(inv.Lootbox) do
+                if type(itemData) == "table" then
+                    local id = tostring(itemData.id or itemData._id or "")
+                    local amt = tonumber(itemData._am or itemData.amount or 1) or 1
+                    local uStr = tostring(uid)
+                    
+                    -- Mở các loại Gift / Lootbox trừ Sunflower Gift (nếu đang bật AutoCombine Huge1)
+                    local isSunflowerGift = (id == "Sunflower Gift")
+                    if not (isSunflowerGift and Config.AutoCombine and Config.CombineRecipes and Config.CombineRecipes["Huge1"]) then
+                        if id:find("Gift") or id:find("Present") or id:find("Lootbox") or id:find("Chest") then
+                            local ok, res = pcall(function() return Network.Invoke("KX_Release", uStr, amt) end)
+                            if ok and res ~= false then
+                                debugLog(string.format("[AUTO GIFT] Opened %d x %s", amt, id))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 9.5: AUTO GARDEN FUSE MACHINE (INDEPENDENT 5-MINUTE DEDICATED THREAD)
+-- --------------------------------------------------------------------------
+function EventP2.AutoFusePets()
+    if not Config.AutoFusePets then return end
+    
+    debugLog("[GARDEN FUSE] 5-Minute Dedicated Thread Check: Scanning inventory for Fuse target & fodder units...")
+    
+    pcall(function()
+        local Save = require(Client:WaitForChild("Save"))
+        local TowerLevelingUtil = require(ReplicatedStorage.Library.Util.TowerLevelingUtil)
+        local save = Save and Save.Get()
+        
+        if not save or not save.Inventory or not save.Inventory.Tower then
+            debugLog("[GARDEN FUSE SKIP] Inventory.Tower data is empty")
+            return
+        end
+        
+        local maxXP = TowerLevelingUtil.MaximumXP or 1000000
+        
+        -- 1. BƯỚC 1: XÁC ĐỊNH BẢNG RANK CỦA TẤT CẢ PET HIỆN CÓ TRONG TÚI
+        local rankSet = {}
+        for uid, unitData in pairs(save.Inventory.Tower) do
+            if type(unitData) == "table" and unitData.id then
+                local unitId = tostring(unitData.id)
+                local baseRank = ROSTER_POWER[unitId]
+                if not baseRank then
+                    for rName, rRank in pairs(ROSTER_POWER) do
+                        if unitId:find(rName) then baseRank = rRank; break end
+                    end
+                end
+                baseRank = baseRank or 1
+                rankSet[baseRank] = true
+            end
+        end
+        
+        local activeRanks = {}
+        for r in pairs(rankSet) do table.insert(activeRanks, r) end
+        table.sort(activeRanks, function(a, b) return a > b end) -- Xếp Rank từ Cao -> Thấp
+        
+        -- Giữ lại Top 1 và Top 2 Bậc Pet cao nhất hiện có (BẢO VỆ 100%, KHÔNG BAO GIỜ THIÊU HỦY)
+        local protectedRanks = {}
+        for i = 1, math.min(2, #activeRanks) do
+            protectedRanks[activeRanks[i]] = true
+        end
+        
+        -- 2. BƯỚC 2: PHÂN LOẠI TARGET (PET TOP 1/TOP 2 CẦN BƠM XP) VÀ FODDER (PET TỪ TOP 3 TRỞ ĐI ĐỂ FUSE)
+        local targetUnits = {}
+        local fodderUnits = {}
+        
+        for uid, unitData in pairs(save.Inventory.Tower) do
+            if type(unitData) == "table" and unitData.id then
+                local unitId = tostring(unitData.id)
+                local count = unitData._am or 1
+                local uq = unitData._uq or (unitData._data and unitData._data._uq)
+                local xp = tonumber((uq and (uq.xp or uq.XP)) or unitData.xp or unitData.XP or 0) or 0
+                local isLocked = unitData._lk or unitData._l
+                
+                local baseRank = ROSTER_POWER[unitId]
+                if not baseRank then
+                    for rName, rRank in pairs(ROSTER_POWER) do
+                        if unitId:find(rName) then baseRank = rRank; break end
+                    end
+                end
+                baseRank = baseRank or 1
+                
+                local isHugeOrTitanic = unitId:find("Huge") or unitId:find("Titanic") or unitId:find("Gargantuan")
+                local isProtected = protectedRanks[baseRank] or isHugeOrTitanic
+                
+                -- Pet Top 1/Top 2 chưa max XP sẽ làm Target nhận XP
+                if isProtected and xp < maxXP then
+                    table.insert(targetUnits, { uid = uid, id = unitId, xp = xp, rank = baseRank })
+                end
+                
+                -- Pet từ Top 3 trở đi (không thuộc protectedRanks, không locked, không Huge) sẽ làm Fodder
+                if not isLocked and not isProtected then
+                    table.insert(fodderUnits, { uid = uid, id = unitId, count = count, rank = baseRank })
+                end
+            end
+        end
+        
+        -- ƯU TIÊN TARGET:
+        -- 1. Ưu tiên Pet Bậc cao hơn (Top 1 > Top 2)
+        -- 2. Với các con cùng Bậc Top 1 (cùng tên), ƯU TIÊN CON CÓ XP/LEVEL CAO NHẤT TRƯỚC để nhanh Max Level DPS cực đại!
+        table.sort(targetUnits, function(a, b)
+            if a.rank ~= b.rank then
+                return a.rank > b.rank
+            else
+                return a.xp > b.xp -- Con XP cao hơn xếp trước để mau Max Cấp!
+            end
+        end)
+        
+        if #targetUnits > 0 and #fodderUnits >= 1 then
+            debugLog(string.format("[GARDEN FUSE] Target Units: %d | Fodder Units Available: %d", #targetUnits, #fodderUnits))
+            local fodderIndex = 1
+            
+            for _, target in ipairs(targetUnits) do
+                local fodderDict = {}
+                local stackCount = 0
+                local totalFodderCount = 0
+                
+                while fodderIndex <= #fodderUnits and stackCount < 25 do
+                    local fodder = fodderUnits[fodderIndex]
+                    if fodder.uid ~= target.uid and fodder.count > 0 then
+                        fodderDict[fodder.uid] = fodder.count
+                        totalFodderCount = totalFodderCount + fodder.count
+                        stackCount = stackCount + 1
+                        fodder.count = 0
+                    end
+                    fodderIndex = fodderIndex + 1
+                end
+                
+                if totalFodderCount > 0 then
+                    local currentLvl = TowerLevelingUtil.XPToLevel(nil, target.xp) or 1
+                    debugLog(string.format("[GARDEN FUSE] Fusing %d fodder units into [%s] (Level %d)...", totalFodderCount, target.id, currentLvl))
+                    
+                    local ok, success, resData = pcall(function()
+                        return Network.Invoke("GardenFuse_Activate", target.uid, fodderDict)
+                    end)
+                    
+                    if ok and success then
+                        -- Chờ 1.0s để Client đồng bộ Save Data mới nhất từ Server sau khi Fuse
+                        task.wait(1.0)
+                        local newSave = Save and Save.Get and Save.Get()
+                        local newUnitData = newSave and newSave.Inventory and newSave.Inventory.Tower and newSave.Inventory.Tower[target.uid]
+                        local newUq = newUnitData and (newUnitData._uq or (newUnitData._data and newUnitData._data._uq))
+                        local newXP = (newUq and tonumber(newUq.xp or newUq.XP)) or (type(resData) == "table" and tonumber(resData.xp or resData.XP)) or (newUnitData and tonumber(newUnitData.xp or newUnitData.XP)) or target.xp or 0
+                        
+                        local newLvl = (TowerLevelingUtil and TowerLevelingUtil.XPToLevel and TowerLevelingUtil.XPToLevel(nil, newXP)) or currentLvl
+                        
+                        debugLog(string.format("[GARDEN FUSE SUCCESS] Fused %d Units into [%s] (Level %d -> %d | XP: %s)", 
+                            totalFodderCount, target.id, currentLvl, newLvl, formatCompactNumber(newXP)))
+                    else
+                        debugLog(string.format("[GARDEN FUSE FAIL] Failed to Fuse into [%s]: %s", target.id, tostring(success or errReason)))
+                    end
+                end
+                
+                if fodderIndex > #fodderUnits then break end
+            end
+        else
+            debugLog(string.format("[GARDEN FUSE STATUS] Targets: %d | Fodders: %d (Need >= 1 fodder unit to fuse)", #targetUnits, #fodderUnits))
+        end
+    end)
+end
+
+-- Tách luồng AutoFusePets độc lập 100% chạy ngầm mỗi 5 phút (300s)
+task.spawn(function()
+    task.wait(15) -- Delay khởi động 15s sau khi script load
+    while true do
+        if Config.AutoFusePets then
+            pcall(function() EventP2.AutoFusePets() end)
+        end
+        task.wait(300) -- Check đúng 5 phút 1 lần độc lập hoàn toàn với Hatch/Main Loop
+    end
+end)
+
+-- --------------------------------------------------------------------------
+-- MODULE 10: AUTO EVENT REBIRTH SHRINE
+-- --------------------------------------------------------------------------
+function EventP2.CheckGardenMissions()
+    pcall(function()
+        -- Ensure Garden Missions active
+        Network.Invoke("NPC Quests: Ensure", "GardenQuests")
+        
+        -- Auto Redeem completed mission goals
+        local claimedAny = false
+        for goalIdx = 1, 3 do
+            local qOk, qRes = pcall(function()
+                return Network.Invoke("NPC Quests: Redeem", "GardenQuests", goalIdx)
+            end)
+            if qOk and qRes == true then
+                claimedAny = true
+                debugLog(string.format("🎁 [GARDEN MISSION CLAIMED] Successfully redeemed Garden Mission #%d reward!", goalIdx))
+            end
+        end
+        if claimedAny then
+            pcall(function() EventP2.TrackInventoryWebhooks() end)
+        end
+    end)
+end
+
+function EventP2.TryRegrow()
+    if not Config.AutoRegrow then return end
+    
+    -- Tự động kiểm tra & nhận quà Garden Missions
+    EventP2.CheckGardenMissions()
+    
+    local now = os.clock()
+    if now - lastRegrowAttemptTime < 10 then
+        return
+    end
+    lastRegrowAttemptTime = now
+    
+    local pcallOk, rSuccess, rMsg, rLevel = pcall(function()
+        return Network.Invoke("WK_Reclaim")
+    end)
+    
+    if pcallOk then
+        if rSuccess == true then
+            local lvlNum = tonumber(rLevel) or 1
+            debugLog(string.format("[REBIRTH] Event Shrine Rebirth Success! Rebirth Level %d", lvlNum))
+            
+            -- Track số lần Super Rebirth thành công
+            getgenv()._SuperRebirthCount = (getgenv()._SuperRebirthCount or 0) + 1
+            local limit = Config.SuperRebirthLimit or 0
+            if limit > 0 and getgenv()._SuperRebirthCount >= limit then
+                Config.AutoRegrow = false
+                debugLog(string.format(
+                    "[REBIRTH] Reached Super Rebirth limit (%d/%d) - Disabling AutoRegrow.",
+                    getgenv()._SuperRebirthCount, limit
+                ))
+            end
+        elseif rSuccess == false then
+            local strMsg = tostring(rMsg or rLevel)
+            debugLog("[REBIRTH] Event Shrine Status:", strMsg)
+            
+            pcall(function()
+                local advOk, advRes = Network.Invoke("PvC_AdvanceBiome")
+                if advOk and advRes then
+                    debugLog("[ADVANCE BIOME] Advanced to Biome 2 (PvC_AdvanceBiome)")
+                end
+            end)
+        end
+    end
+    
+    if Config.AutoCampaignRebirth then
+        pcall(function()
+            if RebirthCmds and RebirthCmds.GetNextRebirth then
+                local nextRebirth = RebirthCmds.GetNextRebirth()
+                if nextRebirth then
+                    local rebirthId = nextRebirth._id or nextRebirth.RebirthNumber
+                    local rOk, rRes = Network.Invoke("Rebirth_Request", rebirthId)
+                    if rOk then
+                        debugLog("[REBIRTH] Main Campaign Rebirth Success! Level:", rebirthId)
+                    end
+                end
+            end
+        end)
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- MODULE 11: AUTO TOWER DEFENDERS
+-- --------------------------------------------------------------------------
+function EventP2.ManageDefenders()
+    if not Config.AutoUpgradeDefenders and not Config.AutoPlaceDefenders and not Config.AutoReplaceBetterDefenders then return end
+    
+    local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+    if not tdLocal or not ClientTower then return end
+    
+    pcall(function() Network.Invoke("YB_Latch", "Upgrade") end)
+    
+    local activeTowers = ClientTower.All(tdLocal) or {}
+    local inventoryTowers = getInventoryTowers()
+    
+    local placedUIDs = {}
+    for _, active in ipairs(activeTowers) do
+        if active and not active.Destroyed then
+            local item = active:GetItem()
+            if item then
+                local u = (item.GetUID and item:GetUID()) or item._uid or item.uid or item.id
+                if u then placedUIDs[tostring(u)] = true end
+            end
+            if active.State and active.State.Item then
+                local rawItem = active.State.Item:Get()
+                if rawItem then
+                    local u = (rawItem.GetUID and rawItem:GetUID()) or rawItem._uid or rawItem.uid
+                    if u then placedUIDs[tostring(u)] = true end
+                end
+            end
+        end
+    end
+    
+    local unplacedInventoryTowers = inventoryTowers
+    
+    table.sort(unplacedInventoryTowers, function(a, b)
+        if a.power ~= b.power then
+            return a.power > b.power
+        end
+        return tostring(a.uid) < tostring(b.uid)
+    end)
+    
+    local freeSlots, combatWorld = getAvailableLaneSlots()
+    
+    local top1Name = (#unplacedInventoryTowers > 0) and unplacedInventoryTowers[1].id or "None"
+    local top1Pwr = (#unplacedInventoryTowers > 0) and unplacedInventoryTowers[1].power or 0
+    
+    debugLog(string.format("[DEFENDER STATUS] Active: %d | Free Slots: %d | Unplaced: %d (Best: %s - Power: %.1f)",
+        #activeTowers, #freeSlots, #unplacedInventoryTowers, tostring(top1Name), top1Pwr
+    ))
+    
+    if Config.AutoPlaceDefenders and #freeSlots > 0 and #unplacedInventoryTowers > 0 then
+        local bestUnplaced = unplacedInventoryTowers[1]
+        
+        for idx, targetSlotPart in ipairs(freeSlots) do
+            local slotPos = targetSlotPart.Position
+            local targetCFrame = CFrame.new(slotPos) * CFrame.Angles(0, math.pi / 2, 0)
+            local relativeCF = combatWorld and combatWorld.CFrame:ToObjectSpace(targetCFrame) or CFrame.new(slotPos)
+            
+            local ok, pSuccess, pReason, towerId = pcall(function()
+                return Network.Invoke("WD_Attach", bestUnplaced.uid, relativeCF)
+            end)
+            
+            if ok and pSuccess == true then
+                debugLog(string.format("[DEFENDER] Placed [%s] (DPS: %.1f) into Slot [%s] (TowerID: %s)",
+                    bestUnplaced.id, bestUnplaced.power, targetSlotPart.Name, tostring(towerId or pReason)
+                ))
+                return
+            else
+                if pReason and type(pReason) == "string" and not pReason:find("occupied") and not pReason:find("close") and not pReason:find("fast") then
+                    debugLog(string.format("[DEFENDER ATTACH FAIL] Slot %s: %s", targetSlotPart.Name, tostring(pReason)))
+                end
+            end
+        end
+    end
+    
+    if Config.AutoReplaceBetterDefenders and #freeSlots == 0 and #unplacedInventoryTowers > 0 then
+        local bestUnplaced = unplacedInventoryTowers[1]
+        
+        local weakestActive = nil
+        local weakestPower = math.huge
+        
+        for _, active in ipairs(activeTowers) do
+            if active and not active.Destroyed then
+                local activeItem = active:GetItem()
+                local activeIdName = (activeItem and activeItem.GetId and activeItem:GetId()) or (active.Id or (active.GetId and active:GetId()) or "Unknown")
+                local activeLvl = (active.GetUpgrade and active:GetUpgrade()) or (active.State and active.State.Upgrade and active.State.Upgrade.Get and active.State.Upgrade:Get()) or 1
+                local pwr = getUnitPower(activeIdName, activeLvl)
+                if pwr < weakestPower then
+                    weakestPower = pwr
+                    weakestActive = active
+                end
+            end
+        end
+        
+        if weakestActive and bestUnplaced.power > weakestPower then
+            local activeItem = weakestActive:GetItem()
+            local activeIdName = activeItem and activeItem.GetId and activeItem:GetId() or "Unknown"
+            local activeId = weakestActive.Id or weakestActive:GetId()
+            local activeCF = (weakestActive.GetCFrame and weakestActive:GetCFrame()) or (weakestActive.Model and weakestActive.Model.GetPivot and weakestActive.Model:GetPivot())
+            local relCF = (combatWorld and activeCF) and combatWorld.CFrame:ToObjectSpace(activeCF) or CFrame.new(0, 0, 0)
+            
+            debugLog(string.format("[DEFENDER] Replacing [%s] (DPS: %.1f) with stronger [%s] (DPS: %.1f)...",
+                activeIdName, weakestPower, bestUnplaced.id, bestUnplaced.power
+            ))
+            
+            pcall(function() Network.Invoke("OR_Detach", activeId) end)
+            
+            for attempt = 1, 5 do
+                task.wait(0.2)
+                local ok, pSuccess, pReason, newTowerId = pcall(function()
+                    return Network.Invoke("WD_Attach", bestUnplaced.uid, relCF)
+                end)
+                if ok and pSuccess == true then
+                    debugLog(string.format("[DEFENDER] Replacement complete! Placed [%s] (TowerID: %s)",
+                        bestUnplaced.id, tostring(newTowerId)
+                    ))
+                    break
+                end
+            end
+        end
+    end
+    
+    -- 4. Kiểm tra Cooldown & Ngân sách dự trữ trước khi Upgrade Level
+    local now = os.clock()
+    local cooldown = Config.DefenderUpgradeCooldown or 1
+    if now - lastDefenderUpgradeTime < cooldown then
+        return
+    end
+    
+    local currentSunflowers = getSunflowers()
+    local reserveLimit = Config.DefenderMinSunflowersReserve or 10000
+    if currentSunflowers < reserveLimit then
+        return
+    end
+    
+    -- 5. Nâng cấp Level cho Defender Units
+    if Config.AutoUpgradeDefenders then
+        local upgradedCount = 0
+        for _, tower in ipairs(activeTowers) do
+            if tower and not tower.Destroyed then
+                local towerId = tower.Id or tower:GetId()
+                local item = tower.GetItem and tower:GetItem()
+                local currentLvl = (tower.GetUpgrade and tower:GetUpgrade()) or (tower.State and tower.State.Upgrade and tower.State.Upgrade.Get and tower.State.Upgrade:Get()) or 1
+                local maxLvl = item and item.GetMaxUpgrade and item:GetMaxUpgrade() or 10
+                
+                if currentLvl < maxLvl then
+                    local upgSuccess, result = pcall(function()
+                        return Network.Invoke("EK_Promote", towerId, 1)
+                    end)
+                    if not upgSuccess or (result ~= true and result ~= nil and result ~= false) then
+                        pcall(function() return Network.Invoke("EK_Promote", towerId) end)
+                    end
+                    
+                    if upgSuccess then
+                        local unitName = item and (item.GetId and item:GetId()) or "Unit"
+                        debugLog(string.format("[UPGRADE UNIT] %s (ID: %s) Level %d -> %d", tostring(unitName), tostring(towerId), currentLvl, currentLvl + 1))
+                        upgradedCount = upgradedCount + 1
+                        if upgradedCount >= 3 then break end
+                    end
+                end
+            end
+        end
+        if upgradedCount > 0 then
+            lastDefenderUpgradeTime = now
+        end
+    end
+end
+
+local lastStatusSummaryTime = 0
+function EventP2.PrintStatusSummary()
+    local now = os.clock()
+    if now - lastStatusSummaryTime < 30 then return end
+    lastStatusSummaryTime = now
+    
+    pcall(function()
+        local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+        local unlockedLanes = localPlot and (localPlot:Save("PvC_UnlockedLanes") or 1) or 1
+        local beds = localPlot and localPlot:Save("PvC_Beds") or {}
+        local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+        local activeTowers = (tdLocal and ClientTower and ClientTower.All(tdLocal)) or {}
+        local suns = getSunflowers()
+        
+        local activeBedsCount = 0
+        for _ in pairs(beds) do activeBedsCount = activeBedsCount + 1 end
+        
+        debugLog(string.format("[SUMMARY] Sunflowers: %s 🪙 | Lanes: %d/7 | Beds: %d/10 | Defenders: %d Pets",
+            formatNumber(suns), unlockedLanes, activeBedsCount, #activeTowers))
+    end)
+end
+
+-- --------------------------------------------------------------------------
+-- 3.5. KAITUN DASHBOARD GUI (MINIMALIST WOODCUTTING.LUA FULLSCREEN STYLE)
+-- --------------------------------------------------------------------------
+getgenv()._EventP2StartTime = getgenv()._EventP2StartTime or os.time()
+getgenv()._EventP2Status = getgenv()._EventP2Status or "Initializing..."
+
+local function FormatTime(seconds)
+    seconds = tonumber(seconds) or 0
+    local hours = math.floor(seconds / 3600)
+    local mins = math.floor((seconds % 3600) / 60)
+    local secs = math.floor(seconds % 60)
+    return string.format("%02d:%02d:%02d", hours, mins, secs)
+end
+
+local function GetSunflowerGiftsCount()
+    local sunGifts = 0
+    local sunBags = 0
+    local totalGifts = 0
+    
+    pcall(function()
+        local saveData = Save.Get and Save.Get()
+        local inv = saveData and saveData.Inventory
+        if inv then
+            for _, category in pairs({"Misc", "Lootbox", "Box", "Gift", "Seed"}) do
+                local dict = inv[category]
+                if dict and type(dict) == "table" then
+                    for uid, itemData in pairs(dict) do
+                        if type(itemData) == "table" then
+                            local itemId = tostring(itemData.id or itemData._id or "")
+                            local amt = tonumber(itemData._am or itemData.am or itemData._ct or 1) or 1
+                            
+                            if itemId == "Sunflower Gift" then
+                                sunGifts = sunGifts + amt
+                                totalGifts = totalGifts + amt
+                            elseif itemId == "Sunflower Gift Bag" then
+                                sunBags = sunBags + amt
+                                totalGifts = totalGifts + amt
+                            elseif itemId:lower():find("gift") then
+                                totalGifts = totalGifts + amt
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    
+    return sunGifts, sunBags, totalGifts
+end
+
+getgenv()._EventP2StartTime = getgenv()._EventP2StartTime or os.time()
+
+local function FormatTime(seconds)
+    seconds = math.max(0, tonumber(seconds) or 0)
+    local hrs = math.floor(seconds / 3600)
+    local mins = math.floor((seconds % 3600) / 60)
+    local secs = math.floor(seconds % 60)
+    return string.format("%02d:%02d:%02d", hrs, mins, secs)
+end
+
+local function extractSeedName(sd)
+    if type(sd) == "string" then return sd
+    elseif type(sd) == "table" then return tostring(sd.id or sd._id or sd.Name or sd.seed or "")
+    elseif type(sd) == "number" then return tostring(sd) end
+    return ""
+end
+
+local function CreateKaitunDashboard()
+    if not Config.ShowKaitunUI then return end
+    
+    local guiName = "PvC_KaitunDashboard"
+    
+    local function FindParent()
+        local pg = LocalPlayer and (LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 5))
+        if pg then
+            if pg:FindFirstChild(guiName) then pg[guiName]:Destroy() end
+            return pg
+        end
+        local ok, cg = pcall(function() return (cloneref and cloneref(game:GetService("CoreGui"))) or game:GetService("CoreGui") end)
+        if ok and cg then
+            if cg:FindFirstChild(guiName) then cg[guiName]:Destroy() end
+            return cg
+        end
+        return nil
+    end
+    
+    local parent = FindParent()
+    if not parent then return end
+    
+    local C_GOLD  = Color3.fromRGB(255, 170, 0)
+    local C_DIM   = Color3.fromRGB(200, 205, 220)
+    local C_WHITE = Color3.new(1, 1, 1)
+    local C_GREEN = Color3.fromRGB(80, 220, 120)
+    
+    local sg = Instance.new("ScreenGui")
+    sg.Name = guiName
+    sg.DisplayOrder = 999
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.Parent = parent
+    
+    -- Fullscreen Black Background Frame
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Color3.new(0, 0, 0)
+    bg.BackgroundTransparency = 0
+    bg.BorderSizePixel = 0
+    bg.ZIndex = 999
+    bg.Parent = sg
+    
+    -- Container Frame
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, 0, 1, 0)
+    container.BackgroundTransparency = 1
+    container.BorderSizePixel = 0
+    container.ZIndex = 1000
+    container.Parent = sg
+    
+    local function MkText(parentObj, text, size, color, bold, yPos, h)
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, 0, 0, h or (size + 6))
+        l.Position = UDim2.new(0, 0, 0, yPos)
+        l.BackgroundTransparency = 1
+        l.Text = text
+        l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+        l.TextSize = size
+        l.TextColor3 = color or C_WHITE
+        l.TextXAlignment = Enum.TextXAlignment.Center
+        l.TextYAlignment = Enum.TextYAlignment.Center
+        l.ZIndex = 1000
+        l.Parent = parentObj
+        return l
+    end
+    
+    local function MkSep(parentObj, yPos)
+        local s = Instance.new("Frame")
+        s.Size = UDim2.new(0, 420, 0, 2)
+        s.Position = UDim2.new(0.5, -210, 0, yPos)
+        s.BackgroundColor3 = C_GOLD
+        s.BackgroundTransparency = 0.4
+        s.BorderSizePixel = 0
+        s.ZIndex = 1000
+        s.Parent = parentObj
+    end
+    
+    -- UI Labels Structure
+    local lblName    = MkText(container, LocalPlayer and LocalPlayer.Name or "Player", 44, C_GOLD, true, 50, 50)
+    MkSep(container, 115)
+    local lblTime    = MkText(container, "Session Time: 00:00:00", 24, C_WHITE, true, 130, 32)
+    local lblCoins   = MkText(container, "Sunflowers: 0 Coins  |  Rebirth: Level 0", 22, C_GOLD, true, 170, 32)
+    local lblGifts   = MkText(container, "Sunflower Gift: 0 Gifts", 22, C_GREEN, true, 210, 30)
+    local lblCrops    = MkText(container, "Garden Beds (10/10): Scanning...", 18, C_DIM, false, 248, 28)
+    local lblLanes    = MkText(container, "Defenders: 0 Pets  |  Lanes: 0/7 Unlocked", 18, C_DIM, false, 280, 28)
+    local lblPotions2 = MkText(container, "Growth: I:0 II:0 III:0", 17, Color3.fromRGB(180, 150, 255), false, 312, 27)
+    local lblStatus   = MkText(container, "Status: Initializing...", 18, C_DIM, false, 372, 28)
+    MkSep(container, 410)
+    local lblRunning  = MkText(container, "Running: Auto Pets vs. Coins Event Engine", 22, C_WHITE, true, 425, 34)
+    
+    -- Toggle Button (top right)
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0, 36, 0, 36)
+    toggleBtn.Position = UDim2.new(1, -48, 0, 10)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 25, 50)
+    toggleBtn.BorderSizePixel = 0
+    toggleBtn.Text = "-"
+    toggleBtn.TextSize = 22
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.TextColor3 = C_WHITE
+    toggleBtn.ZIndex = 1001
+    toggleBtn.Parent = sg
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 6)
+    btnCorner.Parent = toggleBtn
+    
+    local isHidden = false
+    toggleBtn.MouseButton1Click:Connect(function()
+        isHidden = not isHidden
+        container.Visible = not isHidden
+        bg.Visible = not isHidden
+        toggleBtn.Text = isHidden and "+" or "-"
+        
+        pcall(function()
+            game:GetService("RunService"):Set3dRenderingEnabled(isHidden)
+        end)
+    end)
+    
+    -- Real-Time Stats Updater Loop
+    task.spawn(function()
+        while sg and sg.Parent do
+            local uOk, uErr = pcall(function()
+                lblTime.Text = "Session Time: " .. FormatTime(os.time() - (getgenv()._EventP2StartTime or os.time()))
+                
+                local suns = getSunflowers()
+                local rebirthLv = getRebirthLevel and getRebirthLevel() or 0
+                lblCoins.Text = string.format("Sunflowers: %s Coins  |  Rebirth: Level %d", formatCompactNumber(suns), rebirthLv)
+                
+                local sunGifts = GetSunflowerGiftsCount()
+                lblGifts.Text = string.format("Sunflower Gift: %s Gifts", formatNumber(sunGifts))
+                
+                local localPlot = ClientPlot and ClientPlot.GetLocal and ClientPlot.GetLocal("Garden")
+                local beds = localPlot and localPlot:Save("PvC_Beds") or {}
+                local cropCounts = {}
+                local bCount = 0
+                for _, bedData in pairs(beds) do
+                    if type(bedData) == "table" then
+                        bCount = bCount + 1
+                        local cName = extractSeedName(bedData.sp or bedData.id or bedData.Seed or "Basic")
+                        cropCounts[cName] = (cropCounts[cName] or 0) + 1
+                    end
+                end
+                
+                local cropStrList = {}
+                for cName, cCnt in pairs(cropCounts) do
+                    table.insert(cropStrList, cCnt .. " " .. cName)
+                end
+                local cropSummary = #cropStrList > 0 and table.concat(cropStrList, ", ") or "None"
+                lblCrops.Text = string.format("Garden Beds (%d/10): %s", bCount, cropSummary)
+                
+                local unlockedLanes = 0
+                pcall(function()
+                    if localPlot and localPlot.Save then
+                        local lanesSave = localPlot:Save("PvC_Lanes") or localPlot:Save("PvC_UnlockedLanes")
+                        if type(lanesSave) == "number" then
+                            unlockedLanes = lanesSave
+                        elseif type(lanesSave) == "table" then
+                            for _, lData in pairs(lanesSave) do
+                                if type(lData) == "table" and (lData.unlocked or lData.u or lData.Enabled) then
+                                    unlockedLanes = unlockedLanes + 1
+                                end
+                            end
+                        end
+                    end
+                end)
+                
+                local tdLocal = ClientTowerDefense and ClientTowerDefense.GetLocal and ClientTowerDefense.GetLocal()
+                local activeTowers = (tdLocal and ClientTower and ClientTower.All(tdLocal)) or {}
+                lblLanes.Text = string.format("Defenders: %d Pets  |  Lanes: %d/7 Unlocked", #activeTowers, unlockedLanes)
+                
+                -- Đếm Growth Cocktail còn trong túi (Tối ưu từ plaza_sell_ui.lua)
+                pcall(function()
+                    local tracked = {
+                        ["Growth Cocktail I"]   = 0,
+                        ["Growth Cocktail II"]  = 0,
+                        ["Growth Cocktail III"] = 0,
+                    }
+                    local saveData = Save and Save.Get and Save.Get()
+                    local inv = saveData and saveData.Inventory
+                    if inv then
+                        local dicts = { {"Consumable", inv.Consumable}, {"Potion", inv.Potion}, {"Lootbox", inv.Lootbox}, {"Misc", inv.Misc} }
+                        for _, catInfo in ipairs(dicts) do
+                            local catName, dict = catInfo[1], catInfo[2]
+                            if type(dict) == "table" then
+                                for _, data in pairs(dict) do
+                                    if type(data) == "table" then
+                                        local itemObj
+                                        if Types then
+                                            pcall(function() itemObj = Types.From(catName, data) end)
+                                        end
+                                        
+                                        local pName = itemObj and itemObj.GetName and itemObj:GetName() or tostring(data.id or data._id or data.Id or "")
+                                        local amt = itemObj and itemObj.GetAmount and itemObj:GetAmount() or tonumber(data._am or data.Amount or data.amount or data.count) or 1
+                                        local tier = itemObj and itemObj.GetTier and itemObj:GetTier() or tonumber(data.tn or data.tier) or 1
+                                        
+                                        local pNameLower = pName:lower()
+                                        local rawIdLower = tostring(data.id or data._id or ""):lower()
+                                        
+                                        -- Chỉ đếm nếu đúng là "Growth Cocktail" (Không đếm nhầm các loại Potion/Boost khác)
+                                        if pNameLower:find("growth cocktail") or rawIdLower:find("growth cocktail") then
+                                            local fullStr = (pName .. " " .. rawIdLower):upper()
+                                            if tier == 3 or fullStr:find(" III") or fullStr:find(" 3") or fullStr:find("III") then
+                                                tracked["Growth Cocktail III"] = tracked["Growth Cocktail III"] + amt
+                                            elseif tier == 2 or fullStr:find(" II") or fullStr:find(" 2") or fullStr:find("II") then
+                                                tracked["Growth Cocktail II"] = tracked["Growth Cocktail II"] + amt
+                                            else
+                                                tracked["Growth Cocktail I"] = tracked["Growth Cocktail I"] + amt
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    lblPotions2.Text = string.format(
+                        "Growth Cocktail:  I:%s   II:%s   III:%s",
+                        formatNumber(tracked["Growth Cocktail I"]),
+                        formatNumber(tracked["Growth Cocktail II"]),
+                        formatNumber(tracked["Growth Cocktail III"])
+                    )
+                end)
+                
+                lblStatus.Text = "Status: " .. tostring(getgenv()._EventP2Status or "Auto Farming Garden Event...")
+            end)
+            if not uOk then
+                warn("⚠️ [KAITUN UI UPDATER EXCEPTION]:", tostring(uErr))
+            end
+            
+            task.wait(0.5)
+        end
+    end)
+    
+    debugLog("✨ [KAITUN UI] Kaitun Dashboard GUI initialized successfully!")
+end
+
+-- Launch Kaitun Dashboard GUI immediately
+pcall(CreateKaitunDashboard)
+
+-- ==========================================================================
+-- 4. VÒNG LẶP CHÍNH (MAIN AUTOMATION LOOP)
+-- ==========================================================================
+
+getgenv()._EventP2LoopActive = true
+
+task.spawn(function()
+    debugLog("[MAIN LOOP] Master Event Part 2 Loop Activated!")
+    
+    while getgenv()._EventP2LoopActive do
+        local loopOk, loopErr = pcall(function()
+            local inGarden = EventP2.JoinEvent()
+            
+            if inGarden then
+                pcall(function() EventP2.OptimizeFPSAndRAM() end)    -- (0) Optimize FPS & RAM
+                pcall(function() EventP2.FarmCrops() end)            -- (1) Unlock Beds, Harvest & Plant Seeds
+                pcall(function() EventP2.UnlockLanes() end)          -- (2) Unlock Lanes
+                pcall(function() EventP2.BuyEventUpgrades() end)     -- (3) Purchase Event Perks
+                pcall(function() EventP2.BuyMerchant() end)          -- (4) Purchase Merchant Items
+                pcall(function() EventP2.HatchEggs() end)            -- (5) Hatch Event Eggs
+                pcall(function() EventP2.ManageEventBoosts() end)    -- (6) Event Luck Boosts
+                pcall(function() EventP2.TrackInventoryWebhooks() end) -- (7) Track Inventory Webhooks (Run BEFORE Consumption!)
+                pcall(function() EventP2.UseXPPotions() end)         -- (8) Consume XP Tokens & Potions
+                pcall(function() EventP2.ManageCombineMachine() end) -- (9) Combine Machine Crafting
+                pcall(function() EventP2.AutoOpenGifts() end)        -- (9.1) Auto Open Gifts/Lootboxes
+                pcall(function() EventP2.TryRegrow() end)            -- (10) Event Shrine Rebirth & Campaign Rebirth
+                pcall(function() EventP2.ManageDefenders() end)      -- (11) Equip & Upgrade Defenders
+                pcall(function() EventP2.PrintStatusSummary() end)   -- (12) Summary Report
+            end
+        end)
+        
+        if not loopOk then
+            warn("[MAIN LOOP EXCEPTION]:", tostring(loopErr))
+        end
+        
+        task.wait(Config.Interval or 1.5)
+    end
+end)
+
+print("==========================================================================")
+print("[PVC P2] Master Event Part 2 Script Active with Kaitun Dashboard GUI!")
+print("==========================================================================")
