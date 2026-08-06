@@ -1,0 +1,1577 @@
+-- ==========================================================================
+-- KAITUN AUTO FARM FULL SRC - ALL-IN-ONE SINGLE FILE (main.lua)
+-- Game: Crazy Odyness (Roblox)
+-- Complete Standalone Source Code - ZERO EXTERNAL FILE / READFILE DEPENDENCY
+-- Integrated Debug Console + Smooth Walk Tween Ground Probe + Active Quest Target
+-- ==========================================================================
+
+-- ==========================================================================
+-- WAIT GAME & PLAYER LOADED
+-- ==========================================================================
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+repeat task.wait(0.5) until Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
+repeat task.wait(0.5) until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace         = game:GetService("Workspace")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local task              = task
+
+-- Debug Printer
+local function debugLog(category, message, ...)
+    local formatted = string.format(message, ...)
+    print(string.format("[%s] 🛠️ [%s] %s", os.date("%H:%M:%S"), category, formatted))
+end
+
+-- ==========================================================================
+-- BẢNG TỌA ĐỘ BÃI QUÁI (Xác minh chính xác 100% từ MonsterDefs.lua)
+-- ==========================================================================
+-- Verified từ spawn_center_checker.lua (2 lần chạy in-game: 18:07 + 18:19)
+-- SOURCE=monsters: centroid thực tế | FALLBACK: chưa tìm được quái lúc chạy checker
+local MonsterSpawnCenters = {
+    rabbit         = Vector3.new(286.6,   27.3,  -412.1),   -- Verified from live monsters (47 pts)
+    deer           = Vector3.new(477.9,   37.5,  -210.8),   -- Verified from live monsters (11 pts)
+    pig            = Vector3.new(680.0,   35.0,  -475.0),   -- FALLBACK (Y=35)
+    snail          = Vector3.new(398.8,   17.9,   205.5),   -- Verified from live monsters (35 pts)
+    fox            = Vector3.new(700.0,   35.0,   268.0),   -- FALLBACK (Y=35)
+    crab           = Vector3.new(280.3,   25.1,   623.8),   -- Verified from live monsters (6 pts)
+    wolf           = Vector3.new(-274.5,  22.0,   532.5),   -- Verified from live monsters (54 pts)
+    bear           = Vector3.new(-504.1,  31.3,   236.9),   -- Verified from live monsters (48 pts)
+    zombie         = Vector3.new(-1261.6, 39.2,   319.4),   -- Verified from live monsters (46 pts)
+    iceslime       = Vector3.new(-340.3,  25.2,  -353.3),   -- Verified from live monsters (48 pts)
+    icebear        = Vector3.new(-771.3,  22.7,  -236.2),   -- Verified from live monsters (20 pts)
+    spider         = Vector3.new(350.0,   25.0,   650.0),   -- Bãi Poison Spider khu Rừng Đỏ gần bãi Cua (Crab: 280, 25, 623)
+    skeleton       = Vector3.new(-455.0,  35.0,  -560.0),   -- FALLBACK (Y=35)
+    posionscorpion = Vector3.new(-700.0,  35.0,  -560.0),   -- FALLBACK (Y=35)
+    mummy          = Vector3.new(-130.0,  25.0,  -820.0),   -- Tọa độ bãi Mummy trên bờ đất khô (tránh sông)
+    redmummy       = Vector3.new(-455.0,  35.0,  -820.0),   -- FALLBACK (Y=35)
+    ghost          = Vector3.new(-1231.5, 22.9,   716.6),   -- Verified from live monsters (56 pts)
+    snowman        = Vector3.new(-950.0,  35.0,  -560.0),   -- FALLBACK (Y=35)
+    snowzombie     = Vector3.new(-950.0,  35.0,  -820.0),   -- FALLBACK (Y=35)
+    winterclown    = Vector3.new(-950.0,  35.0, -1080.0),   -- FALLBACK (Y=35)
+    golem          = Vector3.new(-260.5,  27.2,  -695.6),   -- Verified from live monsters (9 pts)
+}
+
+
+-- ==========================================================================
+-- MODULE 1: NetBridge (Quản lý Remote Events & Sync PlayerData)
+-- ==========================================================================
+local Net = require(ReplicatedStorage.Shared.Net)
+
+local NetBridge = {
+    PlayerData = {}
+}
+
+NetBridge.ACTION_MAP = {
+    BASIC_ATTACK     = "e89c992", -- Event: Tấn công thường (FireServer)
+    CAST_SKILL       = "e14ca84", -- Event: Sử dụng kỹ năng (FireServer - Number 1->4)
+    ATTACK_FEEDBACK  = "e3f1983", -- Event: Phản hồi đòn đánh
+    CLIENT_INIT      = "edb5518", -- Event: Khởi tạo Client
+    DATA_SYNC        = "e48d3fd", -- Event: Đồng bộ dữ liệu nhân vật
+    QUEST_UPDATE     = "e4a8bee", -- Event: Cập nhật / Nhận / Trả nhiệm vụ
+    PORTAL_TELEPORT  = "e623186", -- Event: Cổng dịch chuyển
+    MAP_WAYPOINT     = "e503498", -- Event: Waypoint
+    SHOP_BUY         = "e3dbafe", -- Event: Mua shop NPC (e3dbafe)
+    INVENTORY_EQUIP  = "e534d20", -- Event: Trang bị vũ khí (e534d20 - verified từ R1e9785b659a01da4)
+    ITEM_ENHANCE     = "e61c8a7", -- Function: Cường hóa vũ khí
+    RUNE_FUSE        = "e5c21ad", -- Function: Ghép Rune
+    SETTINGS_PATCH   = "e4bd8e0", -- Function: Lưu cài đặt
+    TRADE_ACTION     = "eb83c1d", -- Event: Trade
+    TRADE_INVITE     = "ea25820"  -- Event: Mời trade
+}
+
+
+function NetBridge.getRemote(actionName, isFunction)
+    local hashKey = NetBridge.ACTION_MAP[actionName] or actionName
+    return isFunction and Net.func(hashKey) or Net.event(hashKey)
+end
+
+function NetBridge.fire(actionName, ...)
+    local remote = NetBridge.getRemote(actionName, false)
+    if remote then remote:FireServer(...) end
+end
+
+function NetBridge.invoke(actionName, ...)
+    local remote = NetBridge.getRemote(actionName, true)
+    if remote then return remote:InvokeServer(...) end
+    return nil
+end
+
+function NetBridge.on(actionName, callback)
+    local remote = NetBridge.getRemote(actionName, false)
+    if remote then return remote.OnClientEvent:Connect(callback) end
+    return nil
+end
+
+NetBridge.on("DATA_SYNC", function(payload)
+    if type(payload) == "table" then
+        for k, v in pairs(payload) do
+            NetBridge.PlayerData[k] = v
+        end
+        debugLog("NET-SYNC", "Đã nhận DataSync: Level=%s, Gold=%s", tostring(NetBridge.PlayerData.level), tostring(NetBridge.PlayerData.gold))
+    end
+end)
+
+-- Bypass UIKit.isGenuineInput để firesignal(actionBtn.Activated) kích hoạt thành công UI Quest/Shop
+pcall(function()
+    local UIKit = require(ReplicatedStorage.Shared.UIKit)
+    if UIKit and type(UIKit.isGenuineInput) == "function" then
+        UIKit.isGenuineInput = function() return true end
+        debugLog("SYSTEM", "Bypass UIKit.isGenuineInput -> Kích hoạt cơ chế Auto Click UI chính chủ!")
+    end
+end)
+
+-- ==========================================================================
+-- MODULE 1b: AutoPotion (Tự dùng thuốc khi HP < 20%)
+-- Source: PotionController.lua (decompiled)
+--   • Dùng potion: Net.event("e039a15"):FireServer()
+--   • Cooldown server confirm: Net.event("e459d82") → {cooldown, startedAt}
+--   • Cooldown: 13s | PotionSealed attribute = không được dùng
+-- ==========================================================================
+local AutoPotion = {}
+do
+    local Net = require(ReplicatedStorage.Shared.Net)
+    local POTION_REMOTE    = "e039a15"    -- fire → use potion
+    local COOLDOWN_REMOTE  = "e459d82"    -- onClientEvent → {cooldown, startedAt}
+    local HP_THRESHOLD     = 0.20         -- dùng khi HP < 20%
+    local COOLDOWN_SECS    = 13           -- server-side cooldown
+    local CLIENT_RATE      = 0.5          -- không fire quá 1 lần / 0.5s locally
+
+    local cooldownUntil    = 0            -- os.clock() thời điểm hết cooldown
+    local lastFire         = 0
+
+    -- Lắng nghe server confirm cooldown để đồng bộ chính xác hơn
+    Net.event(COOLDOWN_REMOTE).OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" then
+            local cd        = tonumber(payload.cooldown)  or COOLDOWN_SECS
+            local startedAt = tonumber(payload.startedAt) or os.clock()
+            -- startedAt là server time; dùng COOLDOWN_SECS làm fallback local
+            cooldownUntil = os.clock() + math.max(0, cd - (workspace:GetServerTimeNow() - startedAt))
+            debugLog("POTION", "Server confirm cooldown %.1fs", cd)
+        end
+    end)
+
+    function AutoPotion.tryUse()
+        -- Guard: cooldown chưa xong
+        if os.clock() < cooldownUntil then return end
+        -- Guard: rate limit local
+        if os.clock() - lastFire < CLIENT_RATE then return end
+
+        local character = LocalPlayer.Character
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then return end
+
+        -- Guard: PotionSealed (dungeon debuff)
+        if LocalPlayer:GetAttribute("PotionSealed") == true then return end
+
+        local hpRatio = humanoid.Health / humanoid.MaxHealth
+        if hpRatio >= HP_THRESHOLD then return end
+
+        -- Fire remote → giống game tự fire khi nhấn R
+        lastFire      = os.clock()
+        cooldownUntil = os.clock() + COOLDOWN_SECS  -- optimistic lock
+        Net.event(POTION_REMOTE):FireServer()
+        debugLog("POTION", "Dùng potion! HP=%.0f%% (%.0f/%.0f)",
+            hpRatio * 100, humanoid.Health, humanoid.MaxHealth)
+    end
+
+    function AutoPotion.startLoop()
+        task.spawn(function()
+            while true do
+                task.wait(0.5)   -- check 2 lần/giây
+                pcall(AutoPotion.tryUse)
+            end
+        end)
+        debugLog("POTION", "AutoPotion loop started (threshold=20%%, cooldown=%ds)", COOLDOWN_SECS)
+    end
+end
+
+-- ==========================================================================
+-- MODULE 2: Movement (Di chuyển Walk Tween mượt bám sát mặt đất)
+-- ==========================================================================
+local GroundProbe = require(ReplicatedStorage.Shared.Util.GroundProbe)
+
+local Movement = {}
+local activeTween     = nil   -- TweenInstance hiện tại
+local activeMoveConn  = nil   -- Heartbeat connection kiểm tra distance
+local isMoving        = false
+local currentTargetPos = nil
+
+Movement.HOVER_HEIGHT = 8.0 -- Bay lơ lửng 8.0 studs trên mặt đất để không bao giờ bị dính nước hay kẹt chướng ngại vật
+
+function Movement.getGroundPos(pos)
+    -- Probe từ 25 studs phía trên xuống 80 studs, trả về mặt đất + offset 8.0 (Bay lơ lửng trên cao)
+    local groundPos, _ = GroundProbe.groundBelow(pos + Vector3.new(0, 25, 0), 80)
+    
+    -- TRÁNH LEO CÂY / CÀNH CÂY (Tree/Structure height bypass):
+    -- Nếu groundPos trả về có độ cao Y quá cao so với pos (lệch > 12 studs) hoặc cao hơn hẳn mặt đất thông thường (Y > 35):
+    if groundPos and (groundPos.Y - pos.Y > 12 or (pos.Y <= 30 and groundPos.Y > 35)) then
+        -- Thử probe từ độ cao thấp hơn (pos + 3 studs) để lọt qua cành cây
+        local lowGround, _ = GroundProbe.groundBelow(pos + Vector3.new(0, 3, 0), 40)
+        if lowGround and lowGround.Y <= 35 then
+            groundPos = lowGround
+        else
+            groundPos = Vector3.new(pos.X, math.min(pos.Y, 25), pos.Z)
+        end
+    end
+
+    return groundPos and (groundPos + Vector3.new(0, Movement.HOVER_HEIGHT, 0)) or (pos + Vector3.new(0, Movement.HOVER_HEIGHT, 0))
+end
+
+-- Khóa trục Y bằng BodyVelocity trong Head (học từ AryaMain.lua L764-769)
+-- MaxForce Y=math.huge → physics không kéo nhân vật chìm xuống đất khi đang tween
+local function ensureYLock(character)
+    local head = character:FindFirstChild("Head")
+    if head and not head:FindFirstChild("_ylock") then
+        local bv = Instance.new("BodyVelocity")
+        bv.Name     = "_ylock"
+        bv.MaxForce = Vector3.new(0, math.huge, 0)
+        bv.Velocity = Vector3.zero
+        bv.Parent   = head
+    end
+end
+
+local function removeYLock(character)
+    local head = character and character:FindFirstChild("Head")
+    if head then
+        local bv = head:FindFirstChild("_ylock")
+        if bv then bv:Destroy() end
+    end
+end
+
+-- Disable CanCollide toàn bộ character để không bị kẹt tường/fence (AryaMain L762)
+local function setCharacterCanCollide(character, value)
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = value
+        end
+    end
+end
+
+function Movement.stop()
+    isMoving = false
+    currentTargetPos = nil
+
+    if activeTween then
+        pcall(function() activeTween:Cancel() end)
+        activeTween = nil
+    end
+    if activeMoveConn then
+        activeMoveConn:Disconnect()
+        activeMoveConn = nil
+    end
+
+    local character = LocalPlayer.Character
+    if character then
+        -- Chỉ khôi phục collision khi bot đã tắt; khi bot đang chạy giữ CanCollide=false để không kẹt cây/tường
+        if not (KaitunBot and KaitunBot.Enabled) then
+            setCharacterCanCollide(character, true)
+            removeYLock(character)
+        end
+    end
+
+end
+
+
+--- walkTween dùng TweenService:Create trên rootPart.CFrame (học từ AryaMain.lua L788)
+-- Ưu điểm so với Heartbeat manual step:
+--   • TweenService nội suy CFrame mượt, không giật
+--   • CanCollide=false → không kẹt fence/tường
+--   • BodyVelocity Y-lock → không chui đất khi tween
+--   • Server anti-teleport: mỗi frame chỉ di chuyển distance/duration studs
+--     (ví dụ 400 studs / (330 s/s) ≈ 1.2s → ~0.6 studs/frame ở 60fps)
+function Movement.walkTween(targetPos, speed, stopDistance, onComplete)
+    speed        = speed or 35
+    stopDistance = stopDistance or 4.0
+
+    -- Đang đi đến cùng điểm → giữ nguyên, tránh reset giật
+    if isMoving and currentTargetPos and (targetPos - currentTargetPos).Magnitude < 5 then
+        return
+    end
+
+    Movement.stop()
+    currentTargetPos = targetPos
+
+    local character = LocalPlayer.Character
+    if not character then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not rootPart or not humanoid or humanoid.Health <= 0 then return end
+
+    -- Tính flatDist để check ngay nếu đã đến đích
+    local flatDiff = Vector3.new(targetPos.X - rootPart.Position.X, 0, targetPos.Z - rootPart.Position.Z)
+    if flatDiff.Magnitude <= stopDistance then
+        if onComplete then onComplete() end
+        return
+    end
+
+    -- Bước 1: Pre-set Y về ground của ĐIỂM ĐÍCh (AryaMain L787)
+    -- Tránh nhân vật phải "leo" theo trục Y trong lúc tween → không chui đất
+    local destGroundPos = Movement.getGroundPos(targetPos)
+    local curCF = rootPart.CFrame
+    rootPart.CFrame = CFrame.new(curCF.X, destGroundPos.Y, curCF.Z)
+
+    -- Bước 2: Disable CanCollide để không kẹt tường (AryaMain L762)
+    setCharacterCanCollide(character, false)
+
+    -- Bước 3: Y-lock BodyVelocity (AryaMain L764-769) — giữ nhân vật không chìm
+    ensureYLock(character)
+
+    -- Bước 4: Tween mượt đến đích bằng TweenService (AryaMain L788)
+    local dist     = flatDiff.Magnitude
+    local duration = dist / speed    -- giây
+    local destCF   = CFrame.new(Vector3.new(destGroundPos.X, destGroundPos.Y, destGroundPos.Z))
+                     * (rootPart.CFrame - rootPart.CFrame.p)  -- giữ rotation hiện tại
+
+    isMoving = true
+    activeTween = TweenService:Create(rootPart,
+        TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+        {CFrame = destCF}
+    )
+    activeTween:Play()
+
+    -- Bước 5: Heartbeat monitor distance + Dynamic Terrain Hovering (bảo vệ không bao giờ chui xuống nước khi tween)
+    activeMoveConn = RunService.Heartbeat:Connect(function()
+        if not isMoving or not character.Parent or humanoid.Health <= 0 then
+            Movement.stop()
+            return
+        end
+
+        local currentPos = rootPart.Position
+
+        -- Dynamic Hover Probe: Dò địa hình/mặt nước bên dưới từng frame, luôn nâng nhân vật lơ lửng +8 studs
+        local dynamicGround = Movement.getGroundPos(currentPos)
+        if dynamicGround and dynamicGround.Y > (rootPart.Position.Y + 0.5) then
+            rootPart.CFrame = CFrame.new(currentPos.X, dynamicGround.Y, currentPos.Z) * (rootPart.CFrame - rootPart.CFrame.p)
+        end
+
+        local fd = Vector3.new(targetPos.X - currentPos.X, 0, targetPos.Z - currentPos.Z).Magnitude
+
+        if fd <= stopDistance then
+            Movement.stop()
+            if onComplete then onComplete() end
+        end
+    end)
+
+    -- Auto-cleanup khi tween tự hoàn thành
+    activeTween.Completed:Connect(function()
+        if isMoving then
+            Movement.stop()
+            if onComplete then onComplete() end
+        end
+    end)
+end
+
+
+-- ==========================================================================
+-- MODULE 3: TargetFinder (Quét & Định vị Quái vật)
+-- ==========================================================================
+local TargetFinder = {}
+
+function TargetFinder.isValidMonster(monsterModel)
+    if not monsterModel or not monsterModel:IsA("Model") or not monsterModel.Parent then
+        return false
+    end
+    local humanoid = monsterModel:FindFirstChildOfClass("Humanoid")
+    local rootPart = monsterModel:FindFirstChild("HumanoidRootPart") or monsterModel.PrimaryPart
+    return humanoid and humanoid.Health > 0 and rootPart ~= nil
+end
+
+function TargetFinder.getNearestMonster(filterMonsterId, maxDistance)
+    maxDistance = maxDistance or 450
+    local character = LocalPlayer.Character
+    if not character then return nil, maxDistance end
+    local playerRoot = character:FindFirstChild("HumanoidRootPart")
+    if not playerRoot then return nil, maxDistance end
+    local monstersFolder = Workspace:FindFirstChild("Monsters")
+    if not monstersFolder then return nil, maxDistance end
+
+    local spawnCenter = filterMonsterId and MonsterSpawnCenters[filterMonsterId] or nil
+    
+    local nearestMonster, shortestDistance = nil, maxDistance
+    for _, monster in ipairs(monstersFolder:GetChildren()) do
+        if TargetFinder.isValidMonster(monster) then
+            local matchesFilter = true
+            if filterMonsterId then
+                local mobIdAttr = string.lower(tostring(monster:GetAttribute("MonsterId") or monster.Name))
+                local targetId  = string.lower(tostring(filterMonsterId))
+                -- Khớp thông minh tên quái thực tế trong Workspace (Ví dụ: "Poison Spider" -> spider, "Red Mummy" -> redmummy)
+                local isMatch = true
+                if targetId == "golem" and string.find(mobIdAttr, "boss") then
+                    isMatch = false
+                elseif targetId == "bear" and string.find(mobIdAttr, "ice") then
+                    isMatch = false
+                elseif targetId == "zombie" and string.find(mobIdAttr, "snow") then
+                    isMatch = false
+                elseif targetId == "mummy" and string.find(mobIdAttr, "red") then
+                    isMatch = false
+                elseif targetId == "icebear" then
+                    isMatch = (string.find(mobIdAttr, "ice") and string.find(mobIdAttr, "bear")) ~= nil
+                elseif targetId == "snowzombie" then
+                    isMatch = (string.find(mobIdAttr, "snow") and string.find(mobIdAttr, "zombie")) ~= nil
+                elseif targetId == "redmummy" then
+                    isMatch = (string.find(mobIdAttr, "red") and string.find(mobIdAttr, "mummy")) ~= nil
+                elseif targetId == "iceslime" then
+                    isMatch = (string.find(mobIdAttr, "ice") and string.find(mobIdAttr, "slime")) ~= nil
+                elseif targetId == "winterclown" then
+                    isMatch = (string.find(mobIdAttr, "winter") or string.find(mobIdAttr, "clown")) ~= nil
+                elseif targetId == "snowman" then
+                    isMatch = string.find(mobIdAttr, "snowman") ~= nil
+                elseif targetId == "posionscorpion" then
+                    isMatch = string.find(mobIdAttr, "scorpion") ~= nil
+                else
+                    isMatch = string.find(mobIdAttr, targetId) ~= nil
+                end
+
+                matchesFilter = isMatch
+            end
+            if matchesFilter then
+                local monsterRoot = monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
+                if monsterRoot then
+                    -- BÁN KÍNH BÃI FARM (Spawn Center Radius check):
+                    -- Quái phải nằm trong bán kính 350 studs của bãi farm spawnCenter (tránh quái đi lạc hoặc quái ở vùng xa khác)
+                    local isWithinSpawnZone = true
+                    if spawnCenter then
+                        local spawnDist = (Vector3.new(monsterRoot.Position.X, 0, monsterRoot.Position.Z) - Vector3.new(spawnCenter.X, 0, spawnCenter.Z)).Magnitude
+                        if spawnDist > 350 then
+                            isWithinSpawnZone = false
+                        end
+                    end
+
+                    if isWithinSpawnZone then
+                        local dist = (monsterRoot.Position - playerRoot.Position).Magnitude
+                        if dist < shortestDistance then
+                            shortestDistance = dist
+                            nearestMonster = monster
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nearestMonster, shortestDistance
+end
+
+-- ==========================================================================
+-- MODULE 4: Combat (Xoay mặt, Tấn công & Xả Skill)
+-- ==========================================================================
+local Combat = {
+    UndergroundMode = false,     -- Tắt chế độ Chui Đất (trở lại farm mặt đất chuẩn)
+    FastAttack      = true,      -- Giữ Fast Attack rate limit 0.12s cực nhanh
+    AutoSkill       = true,      -- Tự động xả Skill (1: Slash, 2: Fireball, 3, 4...) liên tục khi farm
+}
+local isAttacking = false
+local attackLoopConn = nil
+local lastBasicAttackTime = 0
+local BASIC_ATTACK_COOLDOWN = 0.12  -- Bypass Fast Attack: 0.12s (Khớp với client rate limit trong CombatInputController.lua L246)
+
+local SKILL_COOLDOWN = 0.25
+local lastSkillTime = { 0, 0, 0, 0 }
+
+function Combat.faceTarget(targetMonster)
+    if not TargetFinder.isValidMonster(targetMonster) then return end
+    local character = LocalPlayer.Character
+    if not character then return end
+    local rootPart    = character:FindFirstChild("HumanoidRootPart")
+    local monsterRoot = targetMonster:FindFirstChild("HumanoidRootPart") or targetMonster.PrimaryPart
+    if not rootPart or not monsterRoot then return end
+
+    -- Đứng trên mặt đất chuẩn
+    local stablePos = Movement.getGroundPos(rootPart.Position)
+    local lookPos   = Vector3.new(monsterRoot.Position.X, stablePos.Y, monsterRoot.Position.Z)
+    rootPart.CFrame = CFrame.lookAt(stablePos, lookPos)
+end
+
+
+function Combat.swingBasicAttack()
+    local now = os.clock()
+    local cd  = Combat.FastAttack and 0.12 or 0.45
+    if now - lastBasicAttackTime >= cd then
+        lastBasicAttackTime = now
+        NetBridge.fire("BASIC_ATTACK")
+    end
+end
+
+function Combat.castSkill(slotId)
+    if not Combat.AutoSkill then return end
+    local slot = tonumber(slotId) or 1
+    local now = os.clock()
+    local cd  = Combat.FastAttack and 0.25 or 0.5
+    if now - (lastSkillTime[slot] or 0) >= cd then
+        lastSkillTime[slot] = now
+        NetBridge.fire("CAST_SKILL", slot)
+    end
+end
+
+function Combat.stopAutoAttack()
+    isAttacking = false
+    if attackLoopConn then
+        attackLoopConn:Disconnect()
+        attackLoopConn = nil
+    end
+end
+
+function Combat.startAutoAttack(targetMonster)
+    Combat.stopAutoAttack()
+    if not TargetFinder.isValidMonster(targetMonster) then return end
+    
+    isAttacking = true
+    attackLoopConn = RunService.Heartbeat:Connect(function()
+        if not isAttacking or not TargetFinder.isValidMonster(targetMonster) then
+            Combat.stopAutoAttack()
+            return
+        end
+        Combat.faceTarget(targetMonster)
+        Combat.swingBasicAttack()
+        for slot = 1, 4 do
+            Combat.castSkill(slot)
+        end
+    end)
+end
+
+local QuestManager = {}
+
+-- Giới hạn khoảng cách Level tối đa cho phép làm Quest vượt cấp (Học từ yêu cầu thực tế):
+--   • Level 1 -> 29: Cho phép vượt tối đa +15 Level
+--   • Level 30 -> 39: Cho phép vượt tối đa +10 Level (Quái quật đau)
+--   • Level 40 trở đi: Cho phép vượt tối đa +5 Level (Giữ an toàn HP)
+function QuestManager.getMaxLevelGap(playerLevel)
+    playerLevel = tonumber(playerLevel) or 1
+    if playerLevel >= 40 then
+        return 5
+    elseif playerLevel >= 30 then
+        return 10
+    else
+        return 15
+    end
+end
+
+-- LEVEL_ROADMAP: Ưu tiên đánh heo (pig) ngay từ Level 1-15 vì quái dễ đánh và EXP vượt trội
+QuestManager.LEVEL_ROADMAP = {
+    { minLevel = 1,  maxLevel = 15,  mobId = "pig",            targetName = "Pig" },
+    { minLevel = 16, maxLevel = 21,  mobId = "snail",          targetName = "Snail" },
+    { minLevel = 22, maxLevel = 26,  mobId = "fox",            targetName = "Fox" },
+    { minLevel = 27, maxLevel = 30,  mobId = "crab",           targetName = "Crab" },
+    { minLevel = 31, maxLevel = 35,  mobId = "wolf",           targetName = "Wolf" },
+    { minLevel = 36, maxLevel = 41,  mobId = "bear",           targetName = "Bear" },
+    { minLevel = 42, maxLevel = 47,  mobId = "zombie",         targetName = "Zombie" },
+    { minLevel = 48, maxLevel = 54,  mobId = "spider",         targetName = "Spider" },
+    { minLevel = 55, maxLevel = 60,  mobId = "golem",          targetName = "Golem" },
+    { minLevel = 61, maxLevel = 67,  mobId = "posionscorpion", targetName = "PoisonScorpion" },
+    { minLevel = 68, maxLevel = 100, mobId = "ghost",          targetName = "Ghost" },
+}
+
+local DefaultTargetCounts = {
+    zombie = 150, rabbit = 100, wolf = 50, fox = 50, crab = 50, bear = 50, spider = 80, skeleton = 70, golem = 60, posionscorpion = 50
+}
+
+function QuestManager.getGold()
+    -- 1. Check Attributes
+    local attrGold = LocalPlayer:GetAttribute("Gold") or LocalPlayer:GetAttribute("gold")
+    if attrGold then
+        local g = tonumber(attrGold)
+        if g and g >= 0 then return g end
+    end
+
+    -- 2. Check PlayerData
+    if NetBridge.PlayerData and NetBridge.PlayerData.gold then
+        local g = tonumber(NetBridge.PlayerData.gold)
+        if g and g >= 0 then return g end
+    end
+
+    -- 3. Check leaderstats
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    if leaderstats then
+        local gVal = leaderstats:FindFirstChild("Gold") or leaderstats:FindFirstChild("gold")
+        if gVal then return tonumber(gVal.Value) or 0 end
+    end
+
+    -- 4. Check Data folder
+    local dataFolder = LocalPlayer:FindFirstChild("Data")
+    if dataFolder then
+        local gVal = dataFolder:FindFirstChild("Gold") or dataFolder:FindFirstChild("gold")
+        if gVal then return tonumber(gVal.Value) or 0 end
+    end
+
+    return 0
+end
+
+
+function QuestManager.requestSync()
+    Net.event("e4a8bee"):FireServer()
+end
+
+
+local QuestRequiredDefs = {
+    quest_rabbit_liver        = 10,
+    quest_001                 = 10,
+    quest_deer_antler         = 6,
+    quest_deer_cull           = 20,
+    quest_pig_hide            = 7,
+    quest_pig_cull            = 30,
+    quest_snail_shell         = 8,
+    quest_snail_cull          = 40,
+    quest_fox_tail            = 7,
+    quest_fox_cull            = 50,
+    quest_crab_claw           = 6,
+    quest_crab_cull           = 60,
+    quest_wolf_cull           = 100,
+    quest_bear_cull           = 40,
+    quest_zombie_cull         = 150,
+    quest_iceslime_jelly      = 100,
+    quest_icebear_cull        = 200,
+    quest_spider_leg          = 120,
+    quest_skeleton_cull       = 250,
+    quest_golem_fragment      = 140,
+    quest_posionscorpion_cull = 250,
+    quest_ruins_fragment      = 180,
+    quest_redmummy_cull       = 300,
+    quest_ghost_soul          = 220,
+    quest_snowman_cull        = 350,
+    quest_snowzombie_arm      = 240,
+    quest_winterclown_cull    = 400
+}
+
+local QuestMinLevels = {
+    quest_rabbit_liver        = 1,
+    quest_001                 = 2,
+    quest_deer_antler         = 4,
+    quest_deer_cull           = 6,
+    quest_pig_hide            = 9,
+    quest_pig_cull            = 12,
+    quest_snail_shell         = 15,
+    quest_snail_cull          = 18,
+    quest_fox_tail            = 21,
+    quest_fox_cull            = 24,
+    quest_crab_claw           = 27,
+    quest_crab_cull           = 30,
+    quest_wolf_cull           = 31,
+    quest_bear_cull           = 35,
+    quest_zombie_cull         = 38,
+    quest_iceslime_jelly      = 42,
+    quest_icebear_cull        = 44,
+    quest_spider_leg          = 47,
+    quest_skeleton_cull       = 50,
+    quest_golem_fragment      = 53,
+    quest_posionscorpion_cull = 56,
+    quest_ruins_fragment      = 59,
+    quest_redmummy_cull       = 62,
+    quest_ghost_soul          = 66,
+    quest_snowman_cull        = 69,
+    quest_snowzombie_arm      = 72,
+    quest_winterclown_cull    = 75
+}
+
+local QuestMobMap = {
+    quest_001                 = "rabbit",
+    quest_rabbit_liver        = "rabbit",
+    quest_deer_antler         = "deer",
+    quest_deer_cull           = "deer",
+    quest_pig_hide            = "pig",
+    quest_pig_cull            = "pig",
+    quest_snail_shell         = "snail",
+    quest_snail_cull          = "snail",
+    quest_fox_tail            = "fox",
+    quest_fox_cull            = "fox",
+    quest_crab_claw           = "crab",
+    quest_crab_cull           = "crab",
+    quest_wolf_cull           = "wolf",
+    quest_bear_cull           = "bear",
+    quest_zombie_cull         = "zombie",
+    quest_iceslime_jelly      = "iceslime",
+    quest_icebear_cull        = "icebear",
+    quest_spider_leg          = "spider",
+    quest_skeleton_cull       = "skeleton",
+    quest_golem_fragment      = "golem",
+    quest_posionscorpion_cull = "posionscorpion",
+    quest_ruins_fragment      = "mummy",
+    quest_redmummy_cull       = "redmummy",
+    quest_ghost_soul          = "ghost",
+    quest_snowman_cull        = "snowman",
+    quest_snowzombie_arm      = "snowzombie",
+    quest_winterclown_cull    = "winterclown"
+}
+
+local lastSkipLogTimes = {}
+local lastNoQuestTime   = 0
+
+function QuestManager.getActiveQuestTargetMob()
+    local progressTable = NetBridge.PlayerData and NetBridge.PlayerData.questProgress
+    local playerLevel   = tonumber(LocalPlayer:GetAttribute("Level")) or (NetBridge.PlayerData and tonumber(NetBridge.PlayerData.level)) or 1
+    playerLevel = math.max(1, playerLevel)
+
+    local hasSkippedQuest = false
+
+    if type(progressTable) == "table" then
+        for questId, data in pairs(progressTable) do
+            -- BUG4 FIX: Chỉ coi Quest là Active khi data.accepted == true (hoặc data.accepted == nil nhưng đang có progress/target)
+            local isAccepted = (data.accepted == true) or (data.accepted == nil and (data.progress ~= nil or data.target ~= nil))
+            if type(data) == "table" and isAccepted and data.completed ~= true and data.status ~= "completed" then
+                local questMinLevel = tonumber(QuestMinLevels[questId]) or 1
+                local maxGap = QuestManager.getMaxLevelGap(playerLevel)
+                if questMinLevel - playerLevel > maxGap then
+                    hasSkippedQuest = true
+                    local now = os.clock()
+                    local lastLog = lastSkipLogTimes[questId] or 0
+                    if now - lastLog >= 10 then
+                        lastSkipLogTimes[questId] = now
+                        debugLog("QUEST-SKIP", "Tạm hoãn Quest %s vì minLevel (%d) vượt quá %d cấp so với Level (%d) -> Ưu tiên cày cấp", tostring(questId), questMinLevel, maxGap, playerLevel)
+                    end
+                else
+                    local targetMob = data.target or data.mobId or QuestMobMap[questId]
+                    if not targetMob and type(data.condition) == "table" then
+                        targetMob = data.condition.target
+                    end
+                    
+                    if not targetMob and type(questId) == "string" then
+                        for mobKey, _ in pairs(MonsterSpawnCenters) do
+                            if string.find(string.lower(questId), string.lower(mobKey)) then
+                                targetMob = mobKey
+                                break
+                            end
+                        end
+                    end
+                    
+                    if targetMob then
+                        local current = tonumber(data.progress or data.count or 0) or 0
+                        local rawReq  = tonumber(data.required) or tonumber(data.targetCount)
+                        local QuestDefs = pcall(function() return require(ReplicatedStorage.Shared.Defs.QuestDefs) end) and require(ReplicatedStorage.Shared.Defs.QuestDefs) or nil
+                        local questDef  = QuestDefs and QuestDefs[questId]
+                        local defRequired = questDef and questDef.condition and tonumber(questDef.condition.required)
+                        local required = (rawReq and rawReq > 0) and rawReq or defRequired or QuestRequiredDefs[questId] or DefaultTargetCounts[targetMob] or 10
+                        local isServerReady = (data.ready == true) or (data.status == "ready_to_turn_in") or (data.canTurnIn == true) or (required > 0 and current >= required)
+
+                        if isServerReady then
+                            return targetMob, { current = current, required = required, questId = questId, readyToTurnIn = true, accepted = true }, hasSkippedQuest
+                        else
+                            return targetMob, { current = current, required = required, questId = questId, readyToTurnIn = false, accepted = true }, hasSkippedQuest
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return QuestManager.getRecommendedMobForLevel(), nil, hasSkippedQuest
+end
+
+function QuestManager.acceptQuest(questId, npcId)
+    npcId = npcId or "village_elder"
+    debugLog("QUEST", "Đang gửi lệnh nhận Quest chuẩn xác (ebe39b7): %s (NPC: %s)", tostring(questId), tostring(npcId))
+    Net.event("ebe39b7"):FireServer({
+        npcId   = npcId,
+        action  = "accept",
+        questId = questId,
+        tk      = currentShopToken
+    })
+end
+
+function QuestManager.completeQuest(questId, npcId)
+    npcId = npcId or "village_elder"
+    debugLog("QUEST", "Đang gửi lệnh trả Quest chuẩn xác (ebe39b7): %s (NPC: %s)", tostring(questId), tostring(npcId))
+    Net.event("ebe39b7"):FireServer({
+        npcId   = npcId,
+        action  = "turnin",
+        questId = questId,
+        tk      = currentShopToken
+    })
+end
+
+function QuestManager.getRecommendedMobForLevel()
+    local level = tonumber(LocalPlayer:GetAttribute("Level")) or 0
+    if level == 0 and NetBridge.PlayerData and NetBridge.PlayerData.level then
+        level = tonumber(NetBridge.PlayerData.level) or 1
+    end
+    level = math.max(1, level)
+    for _, config in ipairs(QuestManager.LEVEL_ROADMAP) do
+        if level >= config.minLevel and level <= config.maxLevel then
+            return config.mobId
+        end
+    end
+    return "pig"
+end
+
+-- ==========================================================================
+-- MODULE 6: EconomyUpgrade (Mua Shop & Nâng Cấp Vũ Khí)
+-- Source: ShopUIController.lua, InventoryController.lua, ItemDefs.lua (decompiled)
+-- ==========================================================================
+local EconomyUpgrade   = { isBuyingWeapon = false }
+local lastEquippedWeapon = nil
+
+local currentShopToken   = nil
+local ownedWeapons       = {}  -- Bảng theo dõi các kiếm đã sở hữu từ Server payload
+
+-- Nạp & Lưu danh sách kiếm sở hữu vào File vĩnh viễn theo UserId (Tách biệt hoàn toàn khi Multi-Acc)
+local SAVE_FILE_NAME = string.format("CrazyOdyness_OwnedWeapons_%d.json", LocalPlayer.UserId)
+local HttpService    = game:GetService("HttpService")
+
+
+local function saveOwnedWeaponsToFile()
+    if writefile then
+        pcall(function()
+            local list = {}
+            for k, v in pairs(ownedWeapons) do
+                if v == true then table.insert(list, k) end
+            end
+            writefile(SAVE_FILE_NAME, HttpService:JSONEncode(list))
+        end)
+    end
+end
+
+local function loadOwnedWeaponsFromFile()
+    if readfile and isfile and isfile(SAVE_FILE_NAME) then
+        pcall(function()
+            local content = readfile(SAVE_FILE_NAME)
+            local list = HttpService:JSONDecode(content)
+            if type(list) == "table" then
+                for _, itemId in ipairs(list) do
+                    ownedWeapons[itemId] = true
+                end
+                debugLog("SHOP-SAVE", "Đã khôi phục %d kiếm sở hữu từ file lưu vĩnh viễn (Rejoin Proof)!", #list)
+            end
+        end)
+    end
+end
+
+-- Tự động nạp file lưu khi script chạy
+loadOwnedWeaponsFromFile()
+
+do
+    local Net = require(ReplicatedStorage.Shared.Net)
+
+    -- 1. Lắng nghe Shop payload chính thức từ Server (e14b5f0) để lấy token (tk) & cập nhật ownedWeapons
+    Net.event("e14b5f0").OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" then
+            if type(payload.tk) == "string" then
+                currentShopToken = payload.tk
+                debugLog("SHOP-TOKEN", "Đã nhận Shop Session Token (e14b5f0): %s", currentShopToken)
+            end
+            if type(payload.items) == "table" then
+                local updated = false
+                for k, item in pairs(payload.items) do
+                    local itemId = type(item) == "table" and (item.itemId or k) or k
+                    if type(item) == "table" and (item.owned == true or item.equipped == true) then
+                        ownedWeapons[itemId] = true
+                        updated = true
+                        debugLog("SHOP-OWNED", "Đã xác nhận sở hữu từ Server Shop Payload: %s", tostring(itemId))
+                    end
+                end
+                if updated then saveOwnedWeaponsToFile() end
+            end
+        end
+    end)
+
+    -- 2. Lắng nghe shop payload phụ từ Server (e3dbafe / ebd9a45)
+    Net.event("e3dbafe").OnClientEvent:Connect(function(payload)
+        if type(payload) == "table" and type(payload.tk) == "string" then
+            currentShopToken = payload.tk
+            debugLog("SHOP-TOKEN", "Đã cập nhật Shop Token (e3dbafe): %s", currentShopToken)
+        end
+    end)
+
+    Net.event("ebd9a45").OnClientEvent:Connect(function(payload)
+        if type(payload) ~= "table" then return end
+
+        local npcId   = payload.npcId
+        local questId = payload.questId
+        local phase   = payload.phase
+        local tk      = payload.tk or currentShopToken
+
+        if type(payload.tk) == "string" then
+            currentShopToken = payload.tk
+            debugLog("SHOP-TOKEN", "Đã cập nhật Token (ebd9a45): %s", currentShopToken)
+        end
+
+        debugLog("QUEST-DEBUG", "Nhận ebd9a45 -> npcId=%s, questId=%s, phase=%s, tk=%s",
+            tostring(npcId), tostring(questId), tostring(phase), tostring(tk))
+
+        local action = nil
+        local playerLevel = tonumber(LocalPlayer:GetAttribute("Level")) or (NetBridge.PlayerData and tonumber(NetBridge.PlayerData.level)) or 1
+        local questMinLvl = tonumber(payload.minLevel) or QuestMinLevels[questId] or 1
+
+        if phase == "offer" then
+            local maxGap = QuestManager.getMaxLevelGap(playerLevel)
+            if questMinLvl - playerLevel > maxGap then
+                lastNoQuestTime = os.clock()
+                debugLog("QUEST-WARN", "TỪ CHỐI nhận Quest %s (minLevel=%d) vì vượt quá %d cấp so với Player Level (%d)!", tostring(questId), questMinLvl, maxGap, playerLevel)
+                action = nil
+            else
+                action = "accept"
+            end
+        elseif phase == "job_offer" then
+            action = "job_accept"
+        elseif phase == "ready_to_turn_in" then
+            action = "turnin"
+        elseif phase == "none" or phase == "unavailable_level" then
+            lastNoQuestTime = os.clock()
+            debugLog("QUEST-INFO", "Server phản hồi phase='%s' -> Chưa có Quest khả thi ở level hiện tại, hoãn nói chuyện NPC 20s.", tostring(phase))
+        end
+
+        if npcId and action and tk then
+            task.spawn(function()
+                task.wait(0.25)
+                debugLog("QUEST-AUTO", ">>> GỬI LỆNH QUEST CHUẨN XÁC (ebe39b7): npcId=%s, action=%s, questId=%s, tk=%s <<<",
+                    tostring(npcId), tostring(action), tostring(questId), tostring(tk))
+                
+                Net.event("ebe39b7"):FireServer({
+                    npcId   = npcId,
+                    action  = action,
+                    questId = questId,
+                    tk      = tk
+                })
+
+                -- Đồng bộ DataSync sau 0.3s để Client cập nhật Quest mới
+                task.wait(0.3)
+                Net.event("e4a8bee"):FireServer()
+            end)
+        end
+    end)
+
+
+
+
+
+
+    -- 3. Lắng nghe phản hồi Toast / Thông báo từ Server (e24efa7)
+    Net.event("e24efa7").OnClientEvent:Connect(function(payload)
+        local code = type(payload) == "table" and payload.code or tostring(payload)
+        local kind = type(payload) == "table" and payload.kind or "info"
+        debugLog("SHOP-SERVER", "Phản hồi từ Server: code=%s, kind=%s", tostring(code), tostring(kind))
+
+        if (code == "already_owned" or code == "buy_success") and EconomyUpgrade.currentBuyingItemId then
+            ownedWeapons[EconomyUpgrade.currentBuyingItemId] = true
+            saveOwnedWeaponsToFile()
+            debugLog("SHOP-OWNED", "Server phản hồi code='%s' -> Khóa sở hữu vĩnh viễn [%s]!", tostring(code), EconomyUpgrade.currentBuyingItemId)
+        end
+    end)
+end
+
+
+
+
+-- Bảng ánh xạ tên Tool thực tế trong game (từ ItemDefs.lua)
+local EQUIP_TOOL_MAP = {
+    wood_club    = "WoodClub",
+    bone         = "bone",
+    wooden_sword = "wooden_sword",
+    light_sword  = "light_sword",
+    inferno      = "inferno",
+    shark_sword  = "shark_sword",
+    diamond_sword = "diamond_sword",
+    fire_sword   = "fire_sword",
+    light_saver  = "Lightsaber",
+}
+
+-- Danh sách kiếm trong Shop theo thứ tự mạnh nhất -> yếu nhất
+local WEAPON_SHOP_LIST = {
+    { itemId = "light_saver",   price = 270000, name = "Lightsaber" },
+    { itemId = "fire_sword",    price = 100000, name = "Fire Sword" },
+    { itemId = "diamond_sword", price = 53000,  name = "Diamond Blade" },
+    { itemId = "shark_sword",   price = 27000,  name = "Shark Blade" },
+    { itemId = "inferno",       price = 9200,   name = "Chronos Inferno" },
+    { itemId = "light_sword",   price = 2900,   name = "Light Baton" },
+    { itemId = "wooden_sword",  price = 1100,   name = "Wooden Sword" },
+    { itemId = "bone",          price = 91,     name = "Bone" },
+}
+
+--- Kiểm tra kỹ lưỡng xem kiếm (itemId) đã có trong Hành trang / Nhân vật / Server payload chưa
+local function hasWeaponInInventory(itemId)
+    -- Check 1: Đã xác nhận từ Server payload hoặc cache sở hữu?
+    if ownedWeapons[itemId] == true then
+        return true
+    end
+
+    local equipToolName = EQUIP_TOOL_MAP[itemId] or itemId
+    local lowerId       = string.lower(itemId)
+    local lowerTool     = string.lower(equipToolName)
+
+    local function matches(name)
+        if not name then return false end
+        local l = string.lower(name)
+        return l == lowerId or l == lowerTool or string.find(l, lowerId, 1, true) ~= nil or string.find(l, lowerTool, 1, true) ~= nil
+    end
+
+    -- Check 2: Đang cầm trên tay (Character)
+    local char = LocalPlayer.Character
+    if char then
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") and matches(child.Name) then
+                ownedWeapons[itemId] = true
+                return true, child
+            end
+        end
+    end
+
+    -- Check 3: Trong túi đồ (Backpack)
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        for _, child in ipairs(bp:GetChildren()) do
+            if child:IsA("Tool") and matches(child.Name) then
+                ownedWeapons[itemId] = true
+                return true, child
+            end
+        end
+    end
+
+    -- Check 4: Trong DataSync PlayerData.inventory từ Server
+    if NetBridge.PlayerData and type(NetBridge.PlayerData.inventory) == "table" then
+        for _, invItem in pairs(NetBridge.PlayerData.inventory) do
+            local invId = type(invItem) == "table" and (invItem.itemId or invItem.id) or tostring(invItem)
+            if matches(invId) then
+                ownedWeapons[itemId] = true
+                return true
+            end
+        end
+    end
+
+    return false, nil
+end
+
+
+
+local function findWeaponMerchantNPC()
+    for _, folderName in ipairs({ "VillageNPCs", "NPCs" }) do
+        local folder = Workspace:FindFirstChild(folderName)
+        if folder then
+            for _, npc in ipairs(folder:GetChildren()) do
+                local npcId = npc:GetAttribute("NpcId") or npc.Name
+                if npcId == "npc_weapon_merchant" or string.find(string.lower(tostring(npcId)), "weapon") then
+                    return npc
+                end
+            end
+        end
+    end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and (obj.Name == "npc_weapon_merchant" or obj:GetAttribute("NpcId") == "npc_weapon_merchant") then
+            return obj
+        end
+    end
+    return nil
+end
+
+local function resetCharacter()
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            hum.Health = 0
+        else
+            pcall(function() char:BreakJoints() end)
+        end
+    end
+end
+
+local function waitForRespawn(timeout)
+    local start = os.clock()
+    while os.clock() - start < (timeout or 5) do
+        local char = LocalPlayer.Character
+        if char then
+            local hum  = char:FindFirstChildOfClass("Humanoid")
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and root then
+                return char, root
+            end
+        end
+        task.wait(0.1)
+    end
+    local c = LocalPlayer.Character
+    return c, c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function ensureShopToken()
+    if currentShopToken then return currentShopToken end
+
+    local Net      = require(ReplicatedStorage.Shared.Net)
+    local npcModel = findWeaponMerchantNPC()
+
+    if npcModel then
+        local npcPos = npcModel:FindFirstChild("HumanoidRootPart") and npcModel.HumanoidRootPart.Position or npcModel:GetPivot().Position
+        local targetPos = npcPos + Vector3.new(0, 2, 3)
+
+        local char, rootPart = waitForRespawn(0.3)
+        local dist           = rootPart and (rootPart.Position - targetPos).Magnitude or 9999
+
+        -- 1. Nếu ở xa (>100 studs): Tự sát để respawn về Làng gần NPC
+        if dist > 100 then
+            debugLog("SHOP-TOKEN", "Đang ở bãi quái xa (%.1f studs) -> Tự sát (Health=0) để respawn về Làng...", dist)
+            Movement.stop()
+            resetCharacter()
+
+            -- Chờ nhân vật sống lại tại Làng
+            char, rootPart = waitForRespawn(5)
+            task.wait(0.3)
+
+            if rootPart then
+                dist = (rootPart.Position - targetPos).Magnitude
+                debugLog("SHOP-TOKEN", "Đã respawn về Làng (khoảng cách tới NPC còn %.1f studs).", dist)
+            end
+        end
+
+        -- 2. Di chuyển từ Làng tới sát NPC Merchant (cách < 8 studs)
+        if dist > 8 then
+            debugLog("SHOP-TOKEN", "Đang di chuyển nhanh từ Làng tới NPC Merchant (cách %.1f studs)...", dist)
+            Movement.walkTween(targetPos, 80, 5.0)
+
+            local startTime = os.clock()
+            while os.clock() - startTime < 5 do
+                local curChar = LocalPlayer.Character
+                local curRoot = curChar and curChar:FindFirstChild("HumanoidRootPart")
+                if curRoot and (curRoot.Position - targetPos).Magnitude <= 8 then
+                    rootPart = curRoot
+                    break
+                end
+                task.wait(0.1)
+            end
+            Movement.stop()
+        end
+
+        -- 3. Kích hoạt ProximityPrompt liên tục trong 2 giây cho tới khi nhận Token e14b5f0
+        local prompt = npcModel:FindFirstChildWhichIsA("ProximityPrompt", true)
+        local promptStart = os.clock()
+
+        while os.clock() - promptStart < 2.5 and not currentShopToken do
+            if prompt and fireproximityprompt then
+                fireproximityprompt(prompt)
+            end
+            Net.event("ebe39b7"):FireServer({ npcId = "npc_weapon_merchant", action = "shop" })
+            task.wait(0.3)
+        end
+
+        if currentShopToken then
+            debugLog("SHOP-TOKEN", ">>> ĐÃ LẤY TOKEN CHÍNH XÁC THÀNH CÔNG: %s <<<", currentShopToken)
+        else
+            debugLog("SHOP-WARN", "Cảnh báo: Không lấy được Token sau 2.5s thử lại.")
+        end
+    end
+
+    return currentShopToken
+end
+
+
+function EconomyUpgrade.autoBuyAndEquipBestWeapon()
+    if EconomyUpgrade.isBuyingWeapon then return end
+
+    local Net  = require(ReplicatedStorage.Shared.Net)
+    local gold = QuestManager.getGold()
+
+    for _, w in ipairs(WEAPON_SHOP_LIST) do
+        local hasIt = hasWeaponInInventory(w.itemId)
+
+        -- TRƯỜNG HỢP A: Đã sở hữu kiếm này trong người (Backpack / Character / Server Payload)
+        if hasIt then
+            if lastEquippedWeapon ~= w.itemId then
+                debugLog("SHOP-EQUIP", "Phát hiện ĐÃ SỞ HỮU kiếm [%s] -> Gửi lệnh đeo!", w.name)
+                Net.event("e534d20"):FireServer(w.itemId)
+                lastEquippedWeapon = w.itemId
+            end
+            break -- Đã sở hữu/đeo thanh kiếm xịn nhất có thể, dừng không duyệt tiếp kiếm yếu hơn
+        end
+
+        -- TRƯỜNG HỢP B: Chưa sở hữu & Đủ Gold mua
+        if gold >= w.price then
+            EconomyUpgrade.isBuyingWeapon = true -- Khóa vòng lặp farm chính để tập trung mua sắm
+            EconomyUpgrade.currentBuyingItemId = w.itemId
+            debugLog("SHOP-BUY", "Phát hiện đủ %d Gold -> Kích hoạt quy trình mua kiếm [%s]...", gold, w.name)
+
+
+            -- 1. Đảm bảo có Shop Token hợp lệ (nếu chưa có -> tự tương tác NPC lấy Token)
+            local token = ensureShopToken()
+            if not token then
+                debugLog("SHOP-WARN", "Không lấy được Shop Token -> Hoãn mua [%s], sẽ thử lại ở lượt sau.", w.name)
+                EconomyUpgrade.isBuyingWeapon = false
+                break
+            end
+
+            debugLog("SHOP-BUY", "Gửi lệnh mua: %s (%s) | tk=%s", w.name, w.itemId, token)
+
+            -- 2. Gửi lệnh mua chính thức với token hợp lệ (e3dbafe)
+            Net.event("e3dbafe"):FireServer({
+                type   = "buy",
+                shopId = "village_weapon",
+                itemId = w.itemId,
+                tk     = token
+            })
+            ownedWeapons[w.itemId] = true -- Đánh dấu ĐÃ SỞ HỮU ngay lập tức để không bao giờ mua lại
+
+            -- 3. Gửi lệnh trang bị (e534d20)
+
+            task.wait(0.2)
+            debugLog("SHOP-EQUIP", "Gửi lệnh trang bị sau khi mua: %s (%s)", w.name, w.itemId)
+            Net.event("e534d20"):FireServer(w.itemId)
+            lastEquippedWeapon = w.itemId
+
+            -- 4. Tự sát (Health=0) để respawn quay lại bãi farm siêu tốc
+            debugLog("SHOP-RESPAWN", "Đã mua và trang bị [%s] -> Tự sát (Health=0) để respawn quay lại farm!", w.name)
+            Movement.stop()
+            resetCharacter()
+            waitForRespawn(4)
+
+            EconomyUpgrade.isBuyingWeapon = false -- Mở lại vòng lặp farm chính
+            break -- Chỉ mua 1 thanh kiếm mạnh nhất vừa đủ tiền trong lượt này
+        end
+    end
+end
+
+
+function EconomyUpgrade.buyShopItem(itemId)
+
+    local Net = require(ReplicatedStorage.Shared.Net)
+    Net.event("e3dbafe"):FireServer({
+        type   = "buy",
+        shopId = "village_weapon",
+        itemId = itemId
+    })
+end
+
+function EconomyUpgrade.enhanceEquippedWeapon()
+    -- BUG1 FIX: count=0 trước đây → server từ chối vì không có nguyên liệu.
+    -- count=1: dùng 1 nguyên liệu tăng cường cơ bản; boost=0: không dùng scroll thêm.
+    return NetBridge.invoke("ITEM_ENHANCE", {
+        action = "try",
+        slot = "weapon",
+        boost = 0,
+        count = 1,
+        useProtect = false
+    })
+end
+
+function EconomyUpgrade.fuseRunes(runeItemId)
+    if not runeItemId then return nil end
+    return NetBridge.invoke("RUNE_FUSE", {
+        itemId = runeItemId
+    })
+end
+
+
+-- ==========================================================================
+-- MAIN KAITUN BOT LOADER WITH SMOOTH WALK TWEEN MOVEMENT
+-- ==========================================================================
+local KaitunBot = {
+    Enabled = false,
+    CurrentTarget = nil
+}
+
+function KaitunBot.start()
+    if KaitunBot.Enabled then return end
+    KaitunBot.Enabled = true
+    
+    debugLog("BOT", "Đã khởi chạy Kaitun Auto Farm All-In-One (Smooth Walk Tween Active)!")
+    
+    NetBridge.fire("CLIENT_INIT")
+    QuestManager.requestSync()
+    
+    task.spawn(function()
+        local lastReportTime     = 0
+        local lastWarnTime       = 0   -- throttle log "Chờ quái respawn" (1 lần/10s)
+        local lastNpcInteractTime= 0
+        local isWaitingForQuestResponse = false
+        -- Stuck detection
+
+        local lastStuckCheck     = 0
+        local lastStuckPos       = nil
+        local stuckCount         = 0
+        local waterStuckStart    = nil
+        local STUCK_TIMEOUT      = 4    -- 4 giây không di chuyển được → kẹt cây/địa hình
+        local STUCK_THRESHOLD    = 4    -- studs tối thiểu phải di chuyển trong STUCK_TIMEOUT
+
+        while KaitunBot.Enabled do
+            if EconomyUpgrade.isBuyingWeapon then
+                task.wait(0.5)
+            else
+                local character = LocalPlayer.Character
+                if character and character:FindFirstChild("HumanoidRootPart") then
+                    -- Luôn duy trì CanCollide=false trong lúc bot chạy để lướt xuyên thân cây
+                    setCharacterCanCollide(character, false)
+
+                    local rootPart   = character:FindFirstChild("HumanoidRootPart")
+                    local currentPos = rootPart.Position
+
+                    -- 1. Xác định Quái mục tiêu (Ưu tiên theo Quest)
+                    local mobId, questProgressInfo, hasSkippedQuest = QuestManager.getActiveQuestTargetMob()
+                    local now = os.clock()
+
+                    -- Water / Swimming escape detection: nếu nhân vật rơi xuống sông/hồ nước (>3.5s) -> Tự sát respawn về Làng thoát kẹt
+                    local hum = character:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        local state = hum:GetState()
+                        if state == Enum.HumanoidStateType.Swimming or hum.FloorMaterial == Enum.Material.Water then
+                            if not waterStuckStart then
+                                waterStuckStart = now
+                            elseif now - waterStuckStart >= 3.5 then
+                                debugLog("BOT-WARN", "Nhân vật rơi xuống sông/hồ nước (>3.5s) -> Tự sát (Health=0) để respawn lên mặt đất Làng!")
+                                waterStuckStart = nil
+                                Movement.stop()
+                                resetCharacter()
+                                waitForRespawn(4)
+                            end
+                        else
+                            waterStuckStart = nil
+                        end
+                    end
+
+                    -- Stuck detection: mỗi 4 giây kiểm tra nếu bị vướng thân cây / địa hình
+                    if now - lastStuckCheck >= STUCK_TIMEOUT then
+                        if lastStuckPos then
+                            local moved = (currentPos - lastStuckPos).Magnitude
+                            if moved < STUCK_THRESHOLD then
+                                stuckCount = stuckCount + 1
+                                local hum = character:FindFirstChildOfClass("Humanoid")
+
+                                -- THOÁT KẸT TRÊN CÀNH CÂY / KHUNG CAO: Nếu Y > 35 hoặc kẹt liên tiếp >= 2 lần (8s)
+                                if currentPos.Y > 35 or stuckCount >= 2 then
+                                    debugLog("BOT-WARN", "PHÁT HIỆN KẸT TRÊN CÀNH CÂY (Y=%.1f, Count=%d) -> Ép CFrame rơi xuống mặt đất thoát kẹt!", currentPos.Y, stuckCount)
+                                    Movement.stop()
+                                    setCharacterCanCollide(character, false)
+                                    
+                                    -- Ép CFrame thả rơi về độ cao mặt đất an toàn (Y ~ 22 studs hoặc targetPos.Y)
+                                    local dropY = (currentTargetPos and currentTargetPos.Y < 32) and (currentTargetPos.Y + 2.5) or 22
+                                    rootPart.CFrame = CFrame.new(currentPos.X, dropY, currentPos.Z)
+                                    stuckCount = 0
+                                else
+                                    if hum then
+                                        Movement.stop()
+                                        setCharacterCanCollide(character, false)
+                                        NetBridge.fire("BASIC_ATTACK") -- Chém chặt cây vướng đường
+                                        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                                    end
+                                    debugLog("BOT-WARN", "STUCK %.1f studs/%ds -> Chém chặt cây vướng đường & Nhảy thoát kẹt!", moved, STUCK_TIMEOUT)
+                                end
+                            else
+                                stuckCount = 0
+                            end
+                        end
+                        lastStuckPos   = currentPos
+                        lastStuckCheck = now
+                    end
+
+                    -- Status log mỗi 5 giây
+                    if now - lastReportTime >= 5 then
+                        lastReportTime = now
+                        local posStr = string.format("(%.0f,%.0f,%.0f)", currentPos.X, currentPos.Y, currentPos.Z)
+                        if questProgressInfo then
+                            debugLog("BOT-STATUS", "Quest: %s | Mob: %s (%d/%d) | Gold: %d | Pos: %s",
+                                tostring(questProgressInfo.questId), mobId,
+                                questProgressInfo.current, questProgressInfo.required,
+                                QuestManager.getGold(), posStr)
+                        else
+                            debugLog("BOT-STATUS", "Farm by Level: %s | Gold: %d | Pos: %s", mobId, QuestManager.getGold(), posStr)
+                        end
+                    end
+
+                    -- TỰ ĐỘNG CHẠY VỀ VILLAGE ELDER:
+                    -- Case A: Quest đã hoàn thành sẵn sàng trả (readyToTurnIn == true)
+                    -- Case B: Chưa có Quest active (questProgressInfo == nil), KHÔNG bị hoãn quest (hasSkippedQuest == false) VÀ không nằm trong thời gian chờ (noQuestAvailable == false)
+                    local noQuestAvailable = (os.clock() - (lastNoQuestTime or 0) < 20)
+                    local hasActiveQuest   = (questProgressInfo ~= nil)
+                    local readyToTurnIn    = (questProgressInfo and questProgressInfo.readyToTurnIn == true)
+
+                    local needReturnToElder = readyToTurnIn or (not hasActiveQuest and not hasSkippedQuest and not noQuestAvailable)
+
+
+                    if needReturnToElder then
+                        local VILLAGE_ELDER_POS = Vector3.new(10, 3, -14)
+                        local elderNpc = (Workspace:FindFirstChild("VillageNPCs") and Workspace.VillageNPCs:FindFirstChild("village_elder"))
+                                      or (Workspace:FindFirstChild("NPCs") and Workspace.NPCs:FindFirstChild("village_elder"))
+
+                        local elderPos = elderNpc and (elderNpc.PrimaryPart and elderNpc.PrimaryPart.Position or elderNpc:GetPivot().Position) or VILLAGE_ELDER_POS
+                        local flatElderDist = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(elderPos.X, 0, elderPos.Z)).Magnitude
+
+                        -- Nếu cách cực xa bãi quái (> 250m) -> Mới tự sát respawn về Làng. Nếu đã ở trong Làng (Cách < 250m) -> Đi bộ bình thường
+                        if flatElderDist > 250 then
+                            local reason = (questProgressInfo and questProgressInfo.readyToTurnIn) and "TRẢ QUEST" or "NHẬN QUEST"
+                            debugLog("QUEST-AUTO", "Đang ở bãi quái cực xa (Cách %.1fm) -> Tự sát (Health=0) để respawn về Làng %s!", flatElderDist, reason)
+                            Movement.stop()
+                            resetCharacter()
+                            waitForRespawn(4)
+                            task.wait(1.0)
+                        elseif flatElderDist > 8 then
+                            if now - lastReportTime >= 5 then
+                                lastReportTime = now
+                                debugLog("QUEST-AUTO", "Đã ở trong Làng -> Di chuyển nhanh tới Trưởng Làng (Cách %.1fm)...", flatElderDist)
+                            end
+                            Movement.walkTween(elderPos, 75, 2.0)
+                            Combat.stopAutoAttack()
+                        else
+                            Movement.stop()
+                            if not isWaitingForQuestResponse and (now - lastNpcInteractTime >= 3.0) then
+                                lastNpcInteractTime = now
+                                isWaitingForQuestResponse = true
+                                local actName = (questProgressInfo and questProgressInfo.readyToTurnIn) and "TRẢ QUEST HOÀN THÀNH" or "NHẬN QUEST MỚI"
+                                debugLog("QUEST-AUTO", ">>> Đã đứng sát Trưởng Làng (%.1fm) -> Tự động gửi lệnh tương tác %s! <<<", flatElderDist, actName)
+                                if elderNpc then
+                                    local prompt = elderNpc:FindFirstChildWhichIsA("ProximityPrompt", true)
+                                    if prompt and fireproximityprompt then
+                                        pcall(function() fireproximityprompt(prompt) end)
+                                    end
+                                end
+                                Net.event("ebe39b7"):FireServer({ npcId = "village_elder", action = "talk" })
+                                QuestManager.requestSync()
+
+                                task.delay(3.0, function()
+                                    isWaitingForQuestResponse = false
+                                end)
+                            end
+
+                        end
+                    else
+
+                        -- 2. Tìm quái gần nhất trong Workspace (Giới hạn bán kính local 450 studs)
+                        local targetMob, dist = TargetFinder.getNearestMonster(mobId, 450)
+
+                        if targetMob then
+                            KaitunBot.CurrentTarget = targetMob
+                            local targetRoot = targetMob:FindFirstChild("HumanoidRootPart") or targetMob.PrimaryPart
+
+                            if targetRoot then
+                                if dist > 6 then
+                                    Movement.walkTween(targetRoot.Position, 75, 3.0)
+                                    if dist <= 25 then
+                                        Combat.faceTarget(targetMob)
+                                        for slot = 1, 4 do Combat.castSkill(slot) end
+                                    else
+                                        Combat.stopAutoAttack()
+                                    end
+                                else
+                                    Movement.stop()
+                                    Combat.startAutoAttack(targetMob)
+                                end
+                            end
+
+                        else
+                            -- Chưa có quái → đi về spawn center
+                            local spawnCenter = MonsterSpawnCenters[mobId]
+                            if spawnCenter then
+                                local flatDist = Vector3.new(
+                                    spawnCenter.X - currentPos.X, 0,
+                                    spawnCenter.Z - currentPos.Z).Magnitude
+
+                                if flatDist > 10 then
+                                    Movement.walkTween(spawnCenter, 75, 5.0)
+                                else
+                                    Movement.stop()
+                                    if now - lastWarnTime >= 10 then
+                                        lastWarnTime = now
+                                        debugLog("BOT-WARN",
+                                            "Đã ở bãi %s (flatDist=%.1f). Chờ quái respawn...",
+                                            mobId, flatDist)
+                                    end
+                                end
+                            else
+                                debugLog("BOT-WARN", "Không có SpawnCenter cho mob '%s'.", mobId)
+                            end
+                            Combat.stopAutoAttack()
+                        end
+                    end
+
+
+            end
+            end
+            task.wait(0.15)
+        end
+
+    end)
+
+
+    
+    -- Vòng lặp Mua Shop & Nâng cấp tự động (chạy nhẹ nhàng 30s/lần, không lag server)
+    task.spawn(function()
+        while KaitunBot.Enabled do
+            pcall(EconomyUpgrade.autoBuyAndEquipBestWeapon)
+            pcall(EconomyUpgrade.enhanceEquippedWeapon)
+            task.wait(30)
+        end
+    end)
+
+
+
+    -- Vòng lặp tự động click nút Accept / Turn In trên UI QuestDialogue Panel (Chính xác 100% từ log điều tra)
+    task.spawn(function()
+        while KaitunBot.Enabled do
+            pcall(function()
+                local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+                if playerGui then
+                    local questGui = playerGui:FindFirstChild("QuestDialogGui")
+                    if questGui and questGui.Enabled then
+                        local box = questGui:FindFirstChild("Box")
+                        if box and box.Visible then
+                            local actionBtn = box:FindFirstChild("ActionButton")
+                            if actionBtn and actionBtn:IsA("GuiObject") and actionBtn.Visible then
+                                debugLog("QUEST-UI", ">>> Click Nhận/Trả Quest trên UI: QuestDialogGui.Box.ActionButton (Text='%s') <<<", tostring(actionBtn.Text))
+                                if firesignal then
+                                    pcall(function() firesignal(actionBtn.Activated) end)
+                                    pcall(function() firesignal(actionBtn.MouseButton1Click) end)
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            task.wait(1.0)
+        end
+    end)
+
+
+
+    -- Kích hoạt AutoPotion loop (HP < 20%)
+    AutoPotion.startLoop()
+end
+
+-- ==========================================================================
+-- MODULE 7: AntiAFK (Chống văng game Roblox 20 phút idle bằng Jump + Virtual Click)
+-- ==========================================================================
+do
+    local VirtualUser = game:GetService("VirtualUser")
+    
+    -- 1. Bắt trực tiếp sự kiện Idled mặc định của Roblox Client
+    LocalPlayer.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:Button2Down(Vector2.zero, workspace.CurrentCamera.CFrame)
+            task.wait(1)
+            VirtualUser:Button2Up(Vector2.zero, workspace.CurrentCamera.CFrame)
+            debugLog("ANTI-AFK", "Đã chặn văng game khi Roblox phát hiện Idled (VirtualUser Button2)!")
+        end)
+    end)
+    
+    -- 2. Vòng lặp chủ động kích hoạt Jump + Click định kỳ mỗi 60 giây (Chống AFK 24/7)
+    task.spawn(function()
+        while true do
+            task.wait(60)
+            pcall(function()
+                -- Giả lập Click chuột để làm mới thời gian Idle
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.zero)
+                
+                -- Nhảy nhẹ nhân vật để Roblox tính là Player đang tương tác
+                local char = LocalPlayer.Character
+                if char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end
+                debugLog("ANTI-AFK", "Thực hiện Anti-AFK định kỳ (Jump + Virtual Click) giữ nick online 24/7.")
+            end)
+        end
+    end)
+end
+
+
+function KaitunBot.stop()
+    KaitunBot.Enabled = false
+    Movement.stop()
+    Combat.stopAutoAttack()
+    debugLog("BOT", "Đã dừng Kaitun Auto Farm.")
+end
+
+-- Tự động kích hoạt khi nạp Script
+KaitunBot.start()
+
+return KaitunBot
+
