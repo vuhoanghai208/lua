@@ -59,6 +59,156 @@ local MonsterSpawnCenters = {
 }
 
 
+
+-- ==========================================================================
+-- MODULE 0: IntroHandler (Tự động Bỏ qua Màn Join Game & Tự Động Đặt Tên Acc Mới)
+-- Source: StartScreenController.lua, IntroController.lua (decompiled)
+-- ==========================================================================
+local IntroHandler = {
+    nicknameDone = false
+}
+
+function IntroHandler.restoreAllGuis()
+    LocalPlayer:SetAttribute("HudRevealed", true)
+    LocalPlayer:SetAttribute("StartScreenOpen", nil)
+
+    pcall(function()
+        local StarterGui = game:GetService("StarterGui")
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, false)
+    end)
+
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+
+    local ignoredGuis = {
+        StartScreenGui = true,
+        LoadingScreen  = true,
+        StartFlashGui  = true,
+        AfkGui         = true,
+        NameInputGui   = true,
+        KeybindGui     = true,
+        SettingsGui    = true,
+    }
+
+    for _, child in ipairs(playerGui:GetChildren()) do
+        if child:IsA("ScreenGui") and not ignoredGuis[child.Name] then
+            if not child.Enabled then
+                child.Enabled = true
+            end
+        end
+    end
+end
+
+function IntroHandler.autoBypassStartScreen()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    
+    local startScreenGui = playerGui:FindFirstChild("StartScreenGui")
+    if startScreenGui and (startScreenGui.Enabled or LocalPlayer:GetAttribute("StartScreenOpen") == true) then
+        debugLog("START-SCREEN", "Phát hiện Màn hình Join Game -> Tự động Bỏ qua & Khôi phục Giao diện!")
+
+        local screen     = startScreenGui:FindFirstChild("Screen")
+        local mainColumn = screen and screen:FindFirstChild("MainColumn")
+        local playBtn    = mainColumn and mainColumn:FindFirstChild("PlayBtn")
+
+        if playBtn and firesignal then
+            pcall(function() firesignal(playBtn.Activated) end)
+            pcall(function() firesignal(playBtn.MouseButton1Click) end)
+        end
+
+        -- Ép giải phóng khóa giao diện ngay lập tức
+        LocalPlayer:SetAttribute("StartScreenOpen", nil)
+        startScreenGui.Enabled = false
+
+        -- Xóa Blur Effect trong Lighting nếu có (Xử lý dứt điểm rủi ro bị Blur vĩnh viễn)
+        pcall(function()
+            local blur = game:GetService("Lighting"):FindFirstChild("StartScreenBlur")
+            if blur then blur:Destroy() end
+        end)
+
+        -- Unbind Camera RenderStep của StartScreen nếu có (Tránh camera bị kẹt/khóa góc nhìn)
+        pcall(function()
+            RunService:UnbindFromRenderStep("StartScreenCamBlend")
+        end)
+
+        -- Khôi phục Camera Custom & Controls di chuyển
+        pcall(function()
+            local camera = workspace.CurrentCamera
+            if camera then
+                camera.CameraType = Enum.CameraType.Custom
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then camera.CameraSubject = hum end
+            end
+        end)
+
+        pcall(function()
+            local playerScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+            local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+            if playerModule then
+                local controls = require(playerModule):GetControls()
+                if controls and controls.Enable then controls:Enable() end
+            end
+        end)
+
+        -- Khôi phục 100% Giao diện HUD, Topbar, SkillBar
+        IntroHandler.restoreAllGuis()
+    end
+end
+
+function IntroHandler.autoSetNickname()
+    if IntroHandler.nicknameDone then return end
+
+    local currentName = NetBridge and NetBridge.PlayerData and NetBridge.PlayerData.name
+    if type(currentName) == "string" and currentName ~= "" then
+        IntroHandler.nicknameDone = true
+        return
+    end
+
+    local namePending = LocalPlayer:GetAttribute("NameInputPending")
+    local playerGui   = LocalPlayer:FindFirstChild("PlayerGui")
+    local nameGui     = playerGui and playerGui:FindFirstChild("NameInputGui")
+
+    -- Chỉ chạy khi có yêu cầu nhập tên từ Game (NameInputPending hoặc NameInputGui hiển thị)
+    if namePending or (nameGui and nameGui.Enabled) then
+        local HttpService = game:GetService("HttpService")
+        local randomSuffix = string.upper(string.sub(HttpService:GenerateGUID(false), 1, 5))
+        local generatedName = "Kt_" .. randomSuffix
+
+        debugLog("INTRO-NAME", "Phát hiện Acc Mới chưa có tên -> Tự động đặt tên nhân vật: %s", generatedName)
+
+        local Net = require(game:GetService("ReplicatedStorage").Shared.Net)
+        local success, result = pcall(function()
+            return Net.func("ee075f4"):InvokeServer(generatedName)
+        end)
+
+        if success and type(result) == "table" then
+            if result.success or result.reason == "already_set" then
+                IntroHandler.nicknameDone = true
+                if nameGui then nameGui.Enabled = false end
+                LocalPlayer:SetAttribute("NameInputPending", nil)
+                if result.success then
+                    debugLog("INTRO-NAME", ">>> ĐẶT TÊN THÀNH CÔNG: %s <<<", generatedName)
+                    Net.event("e5f9a2c"):FireServer()
+                    Net.event("e4a8bee"):FireServer() -- Sync lại Data
+                else
+                    debugLog("INTRO-NAME", "Acc đã có tên từ trước (already_set) -> Đã hoàn tất đặt tên.")
+                end
+            else
+                debugLog("INTRO-WARN", "Đặt tên chưa hoàn tất (%s), sẽ thử lại...", tostring(result.reason or "waiting"))
+            end
+        end
+    end
+end
+
+function IntroHandler.checkAll()
+    pcall(IntroHandler.autoBypassStartScreen)
+    pcall(IntroHandler.autoSetNickname)
+    pcall(IntroHandler.restoreAllGuis)
+end
+
+
 -- ==========================================================================
 -- MODULE 1: NetBridge (Quản lý Remote Events & Sync PlayerData)
 -- ==========================================================================
@@ -116,6 +266,12 @@ NetBridge.on("DATA_SYNC", function(payload)
         end
         debugLog("NET-SYNC", "Đã nhận DataSync: Level=%s, Gold=%s", tostring(NetBridge.PlayerData.level), tostring(NetBridge.PlayerData.gold))
     end
+end)
+
+-- Tự động kích hoạt CLIENT_INIT ngay khi load script (đảm bảo đồng bộ DataSync giống hệt Main.lua gốc của game)
+pcall(function()
+    NetBridge.fire("CLIENT_INIT")
+    NetBridge.fire("QUEST_UPDATE")
 end)
 
 -- Bypass UIKit.isGenuineInput để firesignal(actionBtn.Activated) kích hoạt thành công UI Quest/Shop
@@ -204,10 +360,10 @@ local activeMoveConn  = nil   -- Heartbeat connection kiểm tra distance
 local isMoving        = false
 local currentTargetPos = nil
 
-Movement.HOVER_HEIGHT = 8.0 -- Bay lơ lửng 8.0 studs trên mặt đất để không bao giờ bị dính nước hay kẹt chướng ngại vật
+Movement.HOVER_HEIGHT = 1.8 -- Lướt bám sát mặt đất 1.8 studs (An toàn tuyệt đối với Server Anti-Cheat MovementGuard HOVER_MIN_HEIGHT=10)
 
 function Movement.getGroundPos(pos)
-    -- Probe từ 25 studs phía trên xuống 80 studs, trả về mặt đất + offset 8.0 (Bay lơ lửng trên cao)
+    -- Probe từ 25 studs phía trên xuống 80 studs, trả về mặt đất + offset 1.8 (Lướt sát mặt đất)
     local groundPos, _ = GroundProbe.groundBelow(pos + Vector3.new(0, 25, 0), 80)
     
     -- TRÁNH LEO CÂY / CÀNH CÂY (Tree/Structure height bypass):
@@ -1116,8 +1272,8 @@ local function ensureShopToken()
 
         -- 2. Di chuyển từ Làng tới sát NPC Merchant (cách < 8 studs)
         if dist > 8 then
-            debugLog("SHOP-TOKEN", "Đang di chuyển nhanh từ Làng tới NPC Merchant (cách %.1f studs)...", dist)
-            Movement.walkTween(targetPos, 80, 5.0)
+            debugLog("SHOP-TOKEN", "Đang di chuyển từ Làng tới NPC Merchant (cách %.1f studs)...", dist)
+            Movement.walkTween(targetPos, 34, 5.0)
 
             local startTime = os.clock()
             while os.clock() - startTime < 5 do
@@ -1249,6 +1405,32 @@ function EconomyUpgrade.fuseRunes(runeItemId)
     })
 end
 
+function EconomyUpgrade.autoSellLoot()
+    if not NetBridge.PlayerData or type(NetBridge.PlayerData.inventory) ~= "table" then return end
+
+    local ItemDefs = pcall(function() return require(ReplicatedStorage.Shared.Defs.ItemDefs) end) and require(ReplicatedStorage.Shared.Defs.ItemDefs) or {}
+    local Net      = require(ReplicatedStorage.Shared.Net)
+
+    for _, invItem in pairs(NetBridge.PlayerData.inventory) do
+        local itemId = type(invItem) == "table" and (invItem.itemId or invItem.id) or tostring(invItem)
+        local qty    = type(invItem) == "table" and tonumber(invItem.qty or invItem.count or 1) or 1
+
+        if itemId and qty and qty > 0 then
+            local def = ItemDefs[itemId]
+            -- Tự động bán nguyên liệu quái rớt (Loot / Material)
+            if def and (def.category == "material" or def.inventorySection == "other") then
+                debugLog("SHOP-SELL", "Tự động bán rác/nguyên liệu [%s] (Số lượng: %d)...", itemId, qty)
+                Net.event("ec134ea"):FireServer({
+                    type   = "sell",
+                    itemId = itemId,
+                    qty    = qty
+                })
+                task.wait(0.2)
+            end
+        end
+    end
+end
+
 
 -- ==========================================================================
 -- MAIN KAITUN BOT LOADER WITH SMOOTH WALK TWEEN MOVEMENT
@@ -1264,8 +1446,17 @@ function KaitunBot.start()
     
     debugLog("BOT", "Đã khởi chạy Kaitun Auto Farm All-In-One (Smooth Walk Tween Active)!")
     
+    IntroHandler.checkAll()
     NetBridge.fire("CLIENT_INIT")
     QuestManager.requestSync()
+    
+    -- Vòng lặp kiểm tra tự động Bỏ Màn Join Game & Đặt Tên Acc Mới
+    task.spawn(function()
+        while KaitunBot.Enabled do
+            IntroHandler.checkAll()
+            task.wait(1.5)
+        end
+    end)
     
     task.spawn(function()
         local lastReportTime     = 0
@@ -1394,9 +1585,9 @@ function KaitunBot.start()
                         elseif flatElderDist > 8 then
                             if now - lastReportTime >= 5 then
                                 lastReportTime = now
-                                debugLog("QUEST-AUTO", "Đã ở trong Làng -> Di chuyển nhanh tới Trưởng Làng (Cách %.1fm)...", flatElderDist)
+                                debugLog("QUEST-AUTO", "Đã ở trong Làng -> Di chuyển tới Trưởng Làng (Cách %.1fm)...", flatElderDist)
                             end
-                            Movement.walkTween(elderPos, 75, 2.0)
+                            Movement.walkTween(elderPos, 34, 2.0)
                             Combat.stopAutoAttack()
                         else
                             Movement.stop()
@@ -1431,7 +1622,7 @@ function KaitunBot.start()
 
                             if targetRoot then
                                 if dist > 6 then
-                                    Movement.walkTween(targetRoot.Position, 75, 3.0)
+                                    Movement.walkTween(targetRoot.Position, 34, 3.0)
                                     if dist <= 25 then
                                         Combat.faceTarget(targetMob)
                                         for slot = 1, 4 do Combat.castSkill(slot) end
@@ -1453,7 +1644,7 @@ function KaitunBot.start()
                                     spawnCenter.Z - currentPos.Z).Magnitude
 
                                 if flatDist > 10 then
-                                    Movement.walkTween(spawnCenter, 75, 5.0)
+                                    Movement.walkTween(spawnCenter, 34, 5.0)
                                 else
                                     Movement.stop()
                                     if now - lastWarnTime >= 10 then
@@ -1480,12 +1671,13 @@ function KaitunBot.start()
 
 
     
-    -- Vòng lặp Mua Shop & Nâng cấp tự động (chạy nhẹ nhàng 30s/lần, không lag server)
+    -- Vòng lặp Mua Shop, Bán Đồ & Nâng cấp tự động (chạy nhẹ nhàng 25s/lần)
     task.spawn(function()
         while KaitunBot.Enabled do
+            pcall(EconomyUpgrade.autoSellLoot)
             pcall(EconomyUpgrade.autoBuyAndEquipBestWeapon)
             pcall(EconomyUpgrade.enhanceEquippedWeapon)
-            task.wait(30)
+            task.wait(25)
         end
     end)
 
