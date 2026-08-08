@@ -6,7 +6,7 @@
 -- ==========================================================================
 
 -- Config Webhook (Discord) - chỉnh URL / giờ gửi / role ping trước khi nạp
-getgenv().Kaitun = {
+getgenv().Kaitun = getgenv().Kaitun or {
     Url             = "https://discord.com/api/webhooks/1397922298501005433/GEYiKwB5LYJ2zP5k9EZDMrNeE2Hl6tJKSjZsi4q1-prT7PW-49ylG61Orx_dR73DgDaf",
     IntervalHours   = 1,                      -- gửi mỗi X giờ
     TagId           = "992368296374571018",  -- DNS_ID role để ping, để nil = không ping
@@ -64,7 +64,7 @@ do
         if gOK and type(gEnv) == "table" and type(gEnv.Kaitun) == "table" then
             local cap = tonumber(gEnv.Kaitun.set_fps)
             if cap and cap > 0 and type(setfpscap) == "function" then
-                setfpscap(cap)
+                pcall(function() setfpscap(cap) end)
             end
         end
     end)
@@ -73,7 +73,13 @@ end
 -- Debug Printer
 local UILogBuffer = {}   -- Buffer cho UI console (Log tab)
 function debugLog(category, message, ...)
-    local formatted = string.format(message, ...)
+    local formatted
+    if select('#', ...) > 0 then
+        local ok, res = pcall(string.format, tostring(message), ...)
+        formatted = ok and res or tostring(message)
+    else
+        formatted = tostring(message)
+    end
     local line = string.format("[%s] [%s] %s", os.date("%H:%M:%S"), category, formatted)
     print(line)
     table.insert(UILogBuffer, line)
@@ -87,27 +93,27 @@ end
 -- Verified từ spawn_center_checker.lua (2 lần chạy in-game: 18:07 + 18:19)
 -- SOURCE=monsters: centroid thực tế | FALLBACK: chưa tìm được quái lúc chạy checker
 local MonsterSpawnCenters = {
-    rabbit         = Vector3.new(  269.0,   30.0,  -401.0 ),  -- Verified live scan (48 mobs, centroid)
-    deer           = Vector3.new(  643.0,   31.0,  -208.0 ),  -- Verified live scan (47 mobs, centroid)
-    pig            = Vector3.new(  830.0,   18.0,  -531.0 ),  -- Verified live scan (48 mobs, centroid)
-    snail          = Vector3.new(  501.0,   18.0,   222.0 ),  -- Verified live scan (48 mobs, centroid)
-    fox            = Vector3.new(  960.0,   17.0,   336.0 ),  -- Verified live scan (49 mobs, centroid)
-    crab           = Vector3.new(  374.0,   29.0,   717.0 ),  -- Verified live scan (58 mobs, centroid)
-    wolf           = Vector3.new( -210.0,   19.0,   544.0 ),  -- Verified live scan (48 mobs, centroid)
-    bear           = Vector3.new( -509.0,   33.0,   230.0 ),  -- Verified live scan (48 mobs, centroid)
-    zombie         = Vector3.new(-1231.0,   38.0,   318.0 ),  -- Verified live scan (48 mobs, centroid)
-    iceslime       = Vector3.new( -355.0,   23.0,  -315.0 ),  -- Verified live scan (48 mobs, centroid)
-    icebear        = Vector3.new(-1555.0,   28.0,  -198.0 ),  -- Verified live scan (48 mobs, centroid)
-    spider         = Vector3.new(  614.0,   43.0,  1201.0 ),  -- Verified live scan (48 mobs, centroid)
-    skeleton       = Vector3.new( 1122.0,   28.0,   957.0 ),  -- Dungeon Undercave ONLY (Không có bãi overworld)
-    posionscorpion = Vector3.new( 1539.0,   29.0,   201.0 ),  -- Verified live scan (48 mobs, centroid)
-    mummy          = Vector3.new( 1122.0,   28.0,   957.0 ),  -- Verified live scan (50 mobs, centroid)
-    redmummy       = Vector3.new( 1453.0,   25.0,  1251.0 ),  -- Verified live scan (48 mobs, centroid)
-    ghost          = Vector3.new(-1174.0,   29.0,   858.0 ),  -- Verified live scan (78 mobs, centroid)
-    snowman        = Vector3.new(-1208.0,   78.0,  -758.0 ),  -- Verified live scan (48 mobs, centroid)
-    snowzombie     = Vector3.new( -693.0,   99.0, -1146.0 ),  -- Verified live scan (49 mobs, centroid)
-    winterclown    = Vector3.new( -941.0,  125.0, -1391.0 ),  -- Verified live scan (22 mobs, centroid)
-    golem          = Vector3.new( -306.0,   33.0,  -819.0 ),  -- Verified live scan (49 mobs, centroid)
+    rabbit         = Vector3.new(  311.0,   30.0,  -384.0 ),  -- Verified live scan (48 mobs, centroid)
+    deer           = Vector3.new(  591.0,   30.0,  -179.0 ),  -- Verified live scan (48 mobs, centroid)
+    pig            = Vector3.new(  781.0,   17.0,  -530.0 ),  -- Verified live scan (48 mobs, centroid)
+    snail          = Vector3.new(  480.0,   17.0,   229.0 ),  -- Verified live scan (48 mobs, centroid)
+    fox            = Vector3.new(  976.0,   18.0,   325.0 ),  -- Verified live scan (49 mobs, centroid)
+    crab           = Vector3.new(  524.0,   30.0,   753.0 ),  -- Verified live scan (96 mobs, centroid)
+    wolf           = Vector3.new( -464.0,   24.0,   607.0 ),  -- Verified live scan (94 mobs, centroid)
+    bear           = Vector3.new( -502.0,   30.0,   235.0 ),  -- Verified live scan (48 mobs, centroid)
+    zombie         = Vector3.new(-1246.0,   39.0,   308.0 ),  -- Verified live scan (48 mobs, centroid)
+    iceslime       = Vector3.new( -388.0,   23.0,  -375.0 ),  -- Verified live scan (48 mobs, centroid)
+    icebear        = Vector3.new(-1231.0,   28.0,  -217.0 ),  -- Verified live scan (96 mobs, centroid)
+    spider         = Vector3.new(  644.0,   46.0,  1171.0 ),  -- Verified live scan (48 mobs, centroid)
+    skeleton       = Vector3.new( 1196.0,   29.0, -1010.0 ),  -- Verified live scan (119 mobs, centroid)
+    posionscorpion = Vector3.new( 1550.0,   28.0,   190.0 ),  -- Verified live scan (48 mobs, centroid)
+    mummy          = Vector3.new( 1152.0,   25.0,   988.0 ),  -- Verified live scan (50 mobs, centroid)
+    redmummy       = Vector3.new( 1471.0,   11.0,  1286.0 ),  -- Verified live scan (48 mobs, centroid)
+    ghost          = Vector3.new(-1154.0,   27.0,   959.0 ),  -- Verified live scan (99 mobs, centroid)
+    snowman        = Vector3.new(-1215.0,   78.0,  -712.0 ),  -- Verified live scan (48 mobs, centroid)
+    snowzombie     = Vector3.new( -685.0,  101.0, -1146.0 ),  -- Verified live scan (48 mobs, centroid)
+    winterclown    = Vector3.new(-1010.0,  125.0, -1420.0 ),  -- Verified live scan (48 mobs, centroid)
+    golem          = Vector3.new( -337.0,   41.0,  -887.0 ),  -- Verified live scan (50 mobs, centroid)
 }
 
 
@@ -191,8 +197,19 @@ function IntroHandler.autoBypassStartScreen()
             local screen  = startGui:FindFirstChild("Screen")
             local mainCol = screen and screen:FindFirstChild("MainColumn")
             local playBtn = mainCol and mainCol:FindFirstChild("PlayBtn")
-            if playBtn and playBtn:IsA("GuiObject") and firesignal then
-                pcall(function() firesignal(playBtn.Activated) end)
+            if playBtn and playBtn:IsA("GuiObject") then
+                pcall(function()
+                    local act = playBtn.Activated
+                    if typeof(act) == "RBXScriptSignal" then
+                        if type(firesignal) == "function" then
+                            pcall(firesignal, act)
+                        elseif type(getconnections) == "function" then
+                            for _, conn in ipairs(getconnections(act)) do
+                                if type(conn.Fire) == "function" then pcall(function() conn:Fire() end) end
+                            end
+                        end
+                    end
+                end)
             end
             startGui.Enabled = false
             LocalPlayer:SetAttribute("StartScreenOpen", nil)
@@ -448,7 +465,9 @@ do
             local cd        = tonumber(payload.cooldown)  or COOLDOWN_SECS
             local startedAt = tonumber(payload.startedAt) or os.clock()
             -- startedAt là server time; dùng COOLDOWN_SECS làm fallback local
-            cooldownUntil = os.clock() + math.max(0, cd - (workspace:GetServerTimeNow() - startedAt))
+            local sTime = os.clock()
+            pcall(function() sTime = workspace:GetServerTimeNow() end)
+            cooldownUntil = os.clock() + math.max(0, cd - (sTime - startedAt))
             debugLog("POTION", "Server cooldown confirmed: %.1fs", cd)
         end
     end)
@@ -1117,18 +1136,27 @@ end
 
 -- LEVEL_ROADMAP: Ưu tiên đánh heo (pig) ngay từ Level 1-15 vì quái dễ đánh và EXP vượt trội
 QuestManager.LEVEL_ROADMAP = {
-    { minLevel = 1,  maxLevel = 4,   mobId = "rabbit",         targetName = "Rabbit" },
-    { minLevel = 5,  maxLevel = 15,  mobId = "pig",            targetName = "Pig" },
-    { minLevel = 16, maxLevel = 21,  mobId = "snail",          targetName = "Snail" },
-    { minLevel = 22, maxLevel = 26,  mobId = "fox",            targetName = "Fox" },
-    { minLevel = 27, maxLevel = 30,  mobId = "crab",           targetName = "Crab" },
-    { minLevel = 31, maxLevel = 35,  mobId = "wolf",           targetName = "Wolf" },
-    { minLevel = 36, maxLevel = 41,  mobId = "bear",           targetName = "Bear" },
-    { minLevel = 42, maxLevel = 47,  mobId = "zombie",         targetName = "Zombie" },
-    { minLevel = 48, maxLevel = 54,  mobId = "spider",         targetName = "Spider" },
-    { minLevel = 55, maxLevel = 60,  mobId = "golem",          targetName = "Golem" },
-    { minLevel = 61, maxLevel = 67,  mobId = "posionscorpion", targetName = "PoisonScorpion" },
-    { minLevel = 68, maxLevel = 100, mobId = "ghost",          targetName = "Ghost" },
+    { minLevel = 1,  maxLevel = 4,   mobId = "rabbit",         targetName = "Rabbit" },          -- Lv. 1
+    { minLevel = 5,  maxLevel = 10,  mobId = "deer",           targetName = "Deer" },            -- Lv. 5
+    { minLevel = 11, maxLevel = 15,  mobId = "pig",            targetName = "Pig" },             -- Lv. 11
+    { minLevel = 16, maxLevel = 21,  mobId = "snail",          targetName = "Snail" },           -- Lv. 16
+    { minLevel = 22, maxLevel = 26,  mobId = "fox",            targetName = "Fox" },             -- Lv. 22
+    { minLevel = 27, maxLevel = 30,  mobId = "crab",           targetName = "Crab" },            -- Lv. 27
+    { minLevel = 31, maxLevel = 35,  mobId = "wolf",           targetName = "Wolf" },            -- Lv. 31
+    { minLevel = 36, maxLevel = 41,  mobId = "bear",           targetName = "Bear" },            -- Lv. 36
+    { minLevel = 42, maxLevel = 42,  mobId = "zombie",         targetName = "Zombie" },          -- Lv. 42
+    { minLevel = 43, maxLevel = 44,  mobId = "iceslime",       targetName = "IceSlime" },        -- Lv. 43
+    { minLevel = 45, maxLevel = 47,  mobId = "icebear",        targetName = "IceBear" },         -- Lv. 45
+    { minLevel = 48, maxLevel = 51,  mobId = "spider",         targetName = "Spider" },          -- Lv. 48
+    { minLevel = 52, maxLevel = 54,  mobId = "skeleton",       targetName = "Skeleton" },        -- Lv. 52
+    { minLevel = 55, maxLevel = 57,  mobId = "golem",          targetName = "Golem" },           -- Lv. 55
+    { minLevel = 58, maxLevel = 60,  mobId = "posionscorpion", targetName = "PoisonScorpion" },  -- Lv. 58
+    { minLevel = 61, maxLevel = 63,  mobId = "mummy",          targetName = "Mummy" },           -- Lv. 61
+    { minLevel = 64, maxLevel = 67,  mobId = "redmummy",       targetName = "RedMummy" },        -- Lv. 64
+    { minLevel = 68, maxLevel = 70,  mobId = "ghost",          targetName = "Ghost" },           -- Lv. 68
+    { minLevel = 71, maxLevel = 73,  mobId = "snowman",        targetName = "Snowman" },         -- Lv. 71
+    { minLevel = 74, maxLevel = 76,  mobId = "snowzombie",     targetName = "SnowZombie" },      -- Lv. 74
+    { minLevel = 77, maxLevel = 100, mobId = "winterclown",    targetName = "WinterClown" },     -- Lv. 77
 }
 
 local DefaultTargetCounts = {
@@ -2516,9 +2544,9 @@ function KaitunBot.start()
                                 end
                                 _lastQuestOfferRejected = false
                                 debugLog("QUEST", "Clicked dialogue action button: %s", btnText)
-                                if firesignal then
-                                    pcall(function() firesignal(actionBtn.Activated) end)
-                                    pcall(function() firesignal(actionBtn.MouseButton1Click) end)
+                                if type(firesignal) == "function" then
+                                    pcall(function() if actionBtn.Activated then firesignal(actionBtn.Activated) end end)
+                                    pcall(function() if actionBtn.MouseButton1Click then firesignal(actionBtn.MouseButton1Click) end end)
                                 end
                             end
                         end
