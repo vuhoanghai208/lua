@@ -1320,6 +1320,8 @@ function QuestManager.getActiveQuestTargetMob()
                     end
                 elseif (questMinLevel - playerLevel > maxGap) then
                     hasSkippedQuest = true
+                    QuestManager.rejectedMinLevel = questMinLevel
+                    _lastQuestOfferRejected = true
                     local now = os.clock()
                     local lastLog = lastSkipLogTimes[questId] or 0
                     if now - lastLog >= 10 then
