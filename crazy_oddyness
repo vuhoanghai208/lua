@@ -10,7 +10,7 @@ getgenv().Kaitun = {
     Url             = "https://discord.com/api/webhooks/1397922298501005433/GEYiKwB5LYJ2zP5k9EZDMrNeE2Hl6tJKSjZsi4q1-prT7PW-49ylG61Orx_dR73DgDaf",
     IntervalHours   = 1,                      -- gửi mỗi X giờ
     TagId           = "992368296374571018",  -- DNS_ID role để ping, để nil = không ping
-    set_fps         = 10,                    -- Giới hạn FPS (vd: 10, 15, 30, 60), đặt nil/false để giữ mặc định
+    set_fps         = 20,                    -- Giới hạn FPS (vd: 10, 15, 30, 60), đặt nil/false để giữ mặc định
 }
 
 -- ==========================================================================
