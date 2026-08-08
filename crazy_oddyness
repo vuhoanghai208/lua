@@ -2075,14 +2075,20 @@ function KaitunBot.start()
         local STUCK_TIMEOUT      = 4    -- 4 giây không di chuyển được → kẹt cây/địa hình
         local STUCK_THRESHOLD    = 4    -- studs tối thiểu phải di chuyển trong STUCK_TIMEOUT
 
+        local lastCollideSet     = 0
+
         while KaitunBot.Enabled do
             if EconomyUpgrade.isBuyingWeapon then
                 task.wait(0.5)
             else
                 local character = LocalPlayer.Character
                 if character and character:FindFirstChild("HumanoidRootPart") then
-                    -- Luôn duy trì CanCollide=false trong lúc bot chạy để lướt xuyên thân cây
-                    setCharacterCanCollide(character, false)
+                    local now = os.clock()
+                    -- Tối ưu máy yếu: Chỉ quét setCharacterCanCollide mỗi 2.0s thay vì quét mỗi 0.15s
+                    if now - lastCollideSet >= 2.0 then
+                        lastCollideSet = now
+                        setCharacterCanCollide(character, false)
+                    end
 
                     local rootPart   = character:FindFirstChild("HumanoidRootPart")
                     local currentPos = rootPart.Position
